@@ -133,23 +133,24 @@ Shared syntax, ancestry, or implementation details do not imply a shared Target 
 
 A Backend is a mapping between an Integration's infrastructure semantics and one Target contract. Compatibility must therefore be explicit and testable; it is not inferred from matching names, shared syntax, or common ancestry.
 
+Every Target publishes a separately versioned Target Abstractions assembly containing the public Target model and contract needed by Backend authors. A Backend references that Abstractions assembly at compile time but SHALL NOT reference the concrete Target implementation.
+
 For example:
 
 ```text
-VCFA Integration
+Vcfa.Integration.Terraform
     |
-    +-- VCFA -> Terraform Backend
-                    |
-                    +-- requires Terraform Target Contract X
-                                      |
-                                      v
-                              Terraform Target
-                              - Terraform IR
-                              - validation
-                              - HCL emitter
-                              - JSON emitter
-                              - Backend conformance suite
+    +--> Engine.Abstractions
+    +--> Terraform.Target.Abstractions
+
+Terraform.Target
+    |
+    +--> Terraform.Target.Abstractions
 ```
+
+The Target Abstractions assembly may expose Target-specific concepts such as resources, expressions, references, variables, outputs, and the Target contract identity/version. These concepts belong to the Target contract rather than Engine Core.
+
+Engine loads the Backend and concrete Target independently at runtime, verifies Target identity and contract-version compatibility, and then composes them.
 
 Multiple Integrations may independently support the same Target, and an Integration may support multiple distinct Targets:
 
@@ -170,7 +171,11 @@ A new Target does not create automatic compatibility for existing Integrations. 
 
 Implementations are free to share internal code between similar Targets or Backends, but such reuse is not represented as a Target family or compatibility profile in Engine's public architecture.
 
-Every published Target SHALL provide a versioned Backend conformance suite. Every Backend SHALL pass the applicable Target conformance suite before claiming compatibility with that Target and Target contract version.
+Every published Target SHALL provide a versioned Backend conformance suite. Every Backend SHALL pass the applicable Target conformance suite before claiming compatibility with that Target and Target contract version. The conformance package is normally a development/test dependency rather than a production Backend dependency.
+
+Target implementation versions and Target contract versions are separate. A Backend depends on the Target contract version; compatible Target implementation releases may evolve independently behind that contract.
+
+See [ADR-006 - Target Contracts and Backend Dependency Model](ADR-006-target-contracts-and-backend-dependencies.md) for the proposed assembly and dependency model.
 
 ## Artifact contract
 
@@ -203,10 +208,9 @@ The following remain deliberately unresolved:
 - How strongly typed should Resources and their properties be?
 - What are the exact Integration and Semantic Model contracts?
 - How are plugin assemblies discovered, versioned, trusted, and loaded?
-- What is the Target contract/version compatibility model?
-- Are Target contracts distributed separately from Target implementations?
+- What is the exact Target contract/version range and negotiation model?
 - What is the minimum mandatory content of every Backend conformance suite?
-- How are conformance suites packaged and consumed by Integration developers?
+- How does Engine discover Target metadata without activating plugins?
 - How do Targets such as Ansible fit if IR-plus-Emitter is not their natural architecture?
 - What belongs in the Artifact Bundle contract?
 - What is the first vertical slice that proves the architecture?
@@ -218,5 +222,6 @@ The following remain deliberately unresolved:
 - [ADR-003 - Pluggable Backends and Emitters](ADR-003-pluggable-backends-and-emitters.md)
 - [ADR-004 - Cloud-Native Operating Principles](ADR-004-cloud-native-operating-principles.md)
 - [ADR-005 - Infrastructure Integrations and Extension Ownership](ADR-005-infrastructure-integrations-and-extension-ownership.md)
+- [ADR-006 - Target Contracts and Backend Dependency Model](ADR-006-target-contracts-and-backend-dependencies.md)
 
 See also the [working glossary](glossary.md).
