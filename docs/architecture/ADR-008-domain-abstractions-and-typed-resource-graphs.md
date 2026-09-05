@@ -30,6 +30,8 @@ Engine SHALL construct and operate on the Resource Graph through Engine-level ab
 
 Integration Backends MAY reference their Integration's Domain Abstractions directly so they can consume resolved domain resources with strong typing.
 
+The Resource Graph SHALL preserve the concrete Integration-owned typed resource instances produced by semantic analysis. Engine's minimal resource contract defines only the surface Engine itself requires; it does not flatten, discard, or replace domain-specific properties.
+
 Conceptually:
 
 ```text
@@ -94,36 +96,119 @@ VirtualMachine:web01
 
 ## Typed Resource Graph
 
-The Resource Graph SHALL have a common Engine-owned structural contract while permitting Integration-owned strongly typed resource representations.
+The Resource Graph SHALL have a common Engine-owned structural contract while containing Integration-owned strongly typed resource instances.
 
-An illustrative Engine contract might resemble:
+The minimum Engine resource contract SHOULD remain deliberately small. An illustrative shape is:
 
 ```csharp
 public interface IResource
 {
     ResourceIdentity Identity { get; }
     ResourceType Type { get; }
-    IReadOnlyCollection<IResourceRelationship> Relationships { get; }
 }
 ```
 
-An Integration's Domain Abstractions may then expose a resource such as:
+An Integration's Domain Abstractions may expose a complete strongly typed resource such as:
 
 ```csharp
 public sealed record VirtualMachineResource : IResource
 {
     public required ResourceIdentity Identity { get; init; }
+    public ResourceType Type => SddcFlexResourceTypes.VirtualMachine;
+
+    public required string Name { get; init; }
     public required int CpuCount { get; init; }
     public required MemorySize Memory { get; init; }
-    public required NetworkReference Network { get; init; }
+    public required ResourceReference<NetworkResource> Network { get; init; }
+    public required StorageProfile StorageProfile { get; init; }
 }
 ```
 
 These interfaces and types are illustrative rather than accepted API contracts.
 
-Engine can reason about the resource as an `IResource` while an SDDC Flex Backend can consume the same graph resource as a `VirtualMachineResource` through its dependency on `SddcFlex.Abstractions`.
+Engine may enumerate and reason about the object through `IResource`, while an SDDC Flex Backend can consume the same graph node as `VirtualMachineResource` because it references `SddcFlex.Abstractions`.
 
-This preserves strong domain typing without teaching Engine what an SDDC Flex virtual machine is.
+The narrow Engine interface does not imply a narrow or lossy graph. The full concrete resource instance remains available to the Backend with all domain properties produced during semantic analysis.
+
+## Lossless Infrastructure IR
+
+The Infrastructure IR SHALL preserve all resolved information required by a conformant Backend to lower the resource into a supported Target.
+
+A Backend SHALL NOT need to return to raw or parsed Intent merely to recover a property that was available before semantic analysis.
+
+For example, if parsed Intent provides CPU, memory, storage profile, and a network reference, and the Semantic Model accepts and resolves those values, the resulting typed resource SHALL preserve the corresponding resolved domain state for Backend consumption.
+
+Conceptually:
+
+```text
+Parsed Intent
+    cpu = 4
+    memory = 8192
+    network = application
+        |
+        v
+Semantic Analysis
+        |
+        v
+VirtualMachineResource
+    CpuCount = 4
+    Memory = 8192 MiB
+    Network = typed reference
+        |
+        v
+Resource Graph
+        |
+        v
+SddcFlex.Backend.Terraform
+```
+
+The Resource Graph is therefore target-independent, but not information-poor.
+
+## Resource references and graph connectivity
+
+Domain resource objects MAY contain typed resource references, but graph connectivity and resolved edges remain Engine-owned concerns.
+
+For example:
+
+```csharp
+public required ResourceReference<NetworkResource> Network { get; init; }
+```
+
+is preferable to embedding a live `NetworkResource` object directly inside `VirtualMachineResource`.
+
+Engine resolves that reference into a graph edge:
+
+```text
+VirtualMachine:web01
+    |
+    +-- uses-network --> Network:application
+```
+
+This avoids turning domain objects themselves into a cyclic object graph while preserving strong typing for Integration and Backend developers.
+
+A Backend may inspect the typed reference and/or ask the Resource Graph to resolve it to the target resource through Engine-owned graph APIs.
+
+## Graph-owned relationships and dependencies
+
+Semantic relationships and dependency edges SHOULD be represented by the Resource Graph rather than being required members of each resource object.
+
+An illustrative graph contract may resemble:
+
+```csharp
+public interface IResourceGraph
+{
+    IReadOnlyCollection<IResource> Resources { get; }
+    IReadOnlyCollection<ResourceRelationship> Relationships { get; }
+    IReadOnlyCollection<ResourceDependency> Dependencies { get; }
+}
+```
+
+This keeps graph state, cycle detection, dependency ordering, traversal, and reference resolution under Engine ownership while allowing resource classes to focus on domain state.
+
+Relationships and dependencies are distinct concepts:
+
+- a **relationship** expresses domain meaning, such as a virtual machine using a network;
+- a **dependency** expresses ordering or graph dependency derived from resolved semantics.
 
 ## Domain Abstractions and Backend lowering
 
@@ -266,6 +351,8 @@ Domain Abstractions allow:
 
 The Backend boundary also prevents domain semantics and Target representation from becoming entangled. Domain Abstractions remain Target-independent, while Target Abstractions remain domain-independent.
 
+The intentionally small Engine resource contract provides a stable graph participation contract without reducing the actual resource payload available to Backends.
+
 ## Guardrails
 
 - Engine SHALL NOT reference Integration-specific resource types at compile time.
@@ -273,6 +360,9 @@ The Backend boundary also prevents domain semantics and Target representation fr
 - Backends MAY depend on Domain Abstractions and the Target Abstractions they support.
 - Domain resource types SHALL NOT contain Target-specific representation concerns.
 - Semantic Models define resource semantics; Resource Graphs contain resolved resource instances.
+- The Resource Graph SHALL preserve concrete Integration-owned typed resource instances rather than flattening them into generic property bags solely for Engine convenience.
+- The Infrastructure IR SHALL preserve resolved information required by supported Backends; Backends SHALL NOT depend on raw Intent for information recovery.
+- Graph connectivity and resolved dependency edges SHALL remain Engine-owned concerns.
 - Source syntax SHALL NOT leak into the canonical Resource Graph merely because an Adapter supplied it.
 - Target concepts SHALL NOT leak into Domain Abstractions.
 - Backends SHALL NOT redefine domain semantics owned by the Integration.
@@ -290,6 +380,8 @@ The Backend boundary also prevents domain semantics and Target representation fr
 - Domain contracts can evolve using the same explicit compatibility discipline as Engine and Target contracts.
 - The Resource Graph can remain semantically rich without becoming a universal lowest-common-denominator cloud model.
 - The Backend has a precise responsibility: lowering from Domain Abstractions to Target Abstractions.
+- The Engine resource contract can remain small and stable without sacrificing Backend access to domain properties.
+- Typed resource references avoid embedding a cyclic object graph while preserving domain type safety.
 
 ### Negative / risks
 
@@ -298,11 +390,13 @@ The Backend boundary also prevents domain semantics and Target representation fr
 - Poorly designed Domain Abstractions could become overly broad or change too frequently, recreating dependency cascades at the Integration boundary.
 - Typed domain resources complicate serialization and persistence of the Resource Graph compared with a generic property bag.
 - Supporting multiple Domain Abstractions generations in one process may require deliberate assembly isolation or compatibility adapters.
+- Resource reference and graph-resolution APIs must be designed carefully so Backends can navigate relationships without coupling resources directly to one another.
 
 ## Open questions
 
-- What is the exact common Engine resource contract?
-- Does the Resource Graph store concrete Integration-owned resource instances directly, or a normalized Engine-owned representation with typed projections?
+- What is the exact common Engine resource contract beyond `Identity` and `Type`, if anything?
+- What is the exact `IResourceGraph` contract and lookup/resolution API?
+- What is the shape of a typed `ResourceReference<TResource>`?
 - What common typed value system, if any, belongs in Engine Abstractions?
 - How does Engine invoke Integration semantic behavior without depending on Integration implementation types?
 - How are typed Resource Graphs serialized into diagnostics, provenance, or Artifact Bundles?
