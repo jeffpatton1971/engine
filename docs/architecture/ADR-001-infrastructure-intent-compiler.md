@@ -6,13 +6,13 @@
 
 ## Context
 
-The existing BAT architecture evolved around input providers, provider plugins, projection, and output rendering. Those boundaries contain useful ideas, but they also make the architecture easy to describe in terms of implementation stages and deployment technologies rather than the infrastructure intent being expressed.
+Infrastructure automation must accept intent expressed through different source representations, apply infrastructure-domain semantics, resolve relationships and dependencies, and produce artifacts suitable for deployment technologies that may differ by domain.
 
 A ground-up design should preserve flexibility without making a specific source format, cloud platform, or deployment representation the center of the system.
 
 Terraform is an important target, but Bicep, CloudFormation, and other target-native representations may be preferable in some infrastructure domains. The architecture should permit these targets without requiring the core resource model to understand them.
 
-The system also needs a coherent mental model for parsing, validation, identity, relationships, dependency analysis, diagnostics, target translation, and artifact production.
+The system needs a coherent mental model for parsing, validation, identity, relationships, dependency analysis, diagnostics, target translation, and artifact production.
 
 ## Proposed decision
 
@@ -64,7 +64,7 @@ Compiler terminology aligns naturally with the problem:
 
 This allows the design to remain infrastructure-oriented while providing explicit extension points for different input forms and deployment technologies.
 
-The compiler model also encourages deterministic and testable phase boundaries rather than a chain of plugins that can each reinterpret the request.
+The compiler model also encourages deterministic and testable phase boundaries rather than allowing individual extensions to repeatedly reinterpret the original request.
 
 ## Consequences
 
@@ -100,11 +100,11 @@ Rejected as the core architecture because it would make target-specific concepts
 
 Terraform remains a strong candidate for the first production backend.
 
-### Generic transformation pipeline
+### Direct source-to-target transformation
 
-Retain an input -> provider -> projection -> output pipeline.
+Allow each integration to transform source intent directly into deployment artifacts.
 
-Not preferred because the stages describe implementation responsibilities but provide a weaker semantic model for parsing, analysis, intermediate representation, lowering, and emission.
+Not preferred because parsing, infrastructure semantics, target lowering, and physical emission have distinct responsibilities. Direct transformation also makes it harder to reuse semantic analysis across targets or reuse target emitters across infrastructure domains.
 
 ### General orchestration engine
 
