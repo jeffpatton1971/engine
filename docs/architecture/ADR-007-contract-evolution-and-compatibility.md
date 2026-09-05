@@ -20,6 +20,10 @@ Engine runtimes and Target implementations SHALL explicitly declare the contract
 
 A component SHALL only advertise support for a contract generation when it passes that generation's applicable conformance suite.
 
+A contract generation is immutable in its required public shape and semantics once published.
+
+Package revisions within that generation MAY contain non-breaking fixes, documentation, tooling, metadata, and other changes that do not invalidate an already-conformant consumer.
+
 Breaking contract generations SHOULD be independently addressable so that multiple generations can coexist where an implementation intentionally supports them.
 
 ## Contract generations
@@ -39,6 +43,43 @@ Supported Target contracts:
 A Backend compiled against Terraform Contract V1 does not require Terraform Target implementation 1.x. It requires an installed Terraform Target that explicitly supports Contract V1.
 
 Likewise, an Engine implementation may evolve substantially while continuing to support an older Engine extension contract.
+
+## Immutable contract generations
+
+A contract generation defines a durable compatibility promise.
+
+For example:
+
+```text
+Terraform.Target.Abstractions.V1 1.0.0
+Terraform.Target.Abstractions.V1 1.0.1
+Terraform.Target.Abstractions.V1 1.4.7
+```
+
+All of these revisions remain part of Contract V1 and SHALL preserve the same required public shape and semantics.
+
+Within a contract generation, revisions MAY include:
+
+- documentation corrections;
+- analyzers, test helpers, tooling, or metadata improvements;
+- non-breaking implementation fixes in helper code;
+- packaging fixes;
+- changes that preserve all existing public requirements and conformance behavior.
+
+Within a contract generation, revisions SHALL NOT:
+
+- remove required public members;
+- change required member types or signatures;
+- change the meaning of existing fields, members, or operations;
+- make previously conformant consumers non-conformant;
+- add new required interface members or required behaviors;
+- silently redefine validity rules for existing contract constructs.
+
+If a desired change cannot preserve those guarantees, a new contract generation is required.
+
+New optional capabilities SHOULD be introduced alongside the immutable generation rather than by mutating its required surface. Examples include separate capability interfaces, optional model constructs, or companion abstractions that existing consumers are not required to implement or emit.
+
+This means V1.0.0 and V1.4.7 may differ as packages, but they represent the same fundamental compatibility contract.
 
 ## Independently addressable breaking contracts
 
@@ -91,6 +132,8 @@ SupportedContracts = [V1, V2]
 If V1 conformance fails while V2 passes, the implementation SHALL NOT advertise V1 compatibility.
 
 Release validation SHOULD fail when advertised compatibility differs from demonstrated conformance results.
+
+The conformance suite for an immutable generation becomes part of the durable definition of what support for that generation means. Revisions to the suite SHALL NOT introduce new mandatory behavior that would invalidate a previously conformant consumer unless the earlier suite was demonstrably incorrect relative to the published contract. Such corrections require explicit review and documentation because they alter compatibility evidence.
 
 ## Compatibility matrix
 
@@ -145,15 +188,28 @@ Resolution:
 
 Engine SHALL resolve compatibility from Target identity and explicitly supported contract generations rather than from implementation-version ranges.
 
-## Additive evolution within a generation
+## Contract extension without mutation
 
-Contract generations SHOULD be intentionally slow-moving and conservative.
+Once a generation is published, its required public contract is frozen.
 
-Within a generation, evolution SHOULD prefer additive changes that do not invalidate existing consumers. Public contracts SHOULD avoid large interfaces whose routine extension forces downstream implementations to change.
+The preferred way to add functionality without creating a breaking generation is to compose new optional capabilities around the existing contract rather than editing required members in place.
 
-Where practical, new optional constructs, new value types, additional metadata, or narrowly scoped capability interfaces are preferable to modifying existing required members.
+For example, instead of adding a new required member to an existing interface, the ecosystem may introduce a separate capability interface that implementations opt into.
 
-A new breaking generation is warranted when compatibility cannot be preserved without weakening the contract or introducing misleading behavior.
+```text
+Contract V1
+    stable required surface
+
+Optional Capability A
+    independent additive surface
+
+Optional Capability B
+    independent additive surface
+```
+
+Existing V1 consumers remain valid and do not need to rebuild merely because new optional capabilities exist.
+
+A new contract generation is warranted when the existing generation's required shape or semantics must change.
 
 ## Conformance versus migration
 
@@ -198,7 +254,10 @@ Even then, supporting multiple contract generations can provide a migration wind
 - Release validation SHOULD verify advertised compatibility against conformance results.
 - Breaking contract generations SHOULD be independently addressable.
 - Contract evolution SHOULD be substantially slower than implementation evolution.
-- Existing contract generations SHOULD remain unchanged where additive extension is sufficient.
+- A published contract generation SHALL remain immutable in its required public shape and semantics.
+- Package revisions within a generation SHALL NOT invalidate already-conformant consumers.
+- New required behavior or required structure SHALL require a new contract generation.
+- Optional capabilities SHOULD be composed alongside existing contracts rather than mutating required surfaces.
 - Compatibility metadata SHALL describe demonstrated support, not desired or presumed support.
 
 ## Consequences
@@ -211,6 +270,8 @@ Even then, supporting multiple contract generations can provide a migration wind
 - Third-party authors can understand exactly which contract they target.
 - Compatibility failures can be caught before release.
 - Package version ranges no longer carry semantic responsibilities they cannot reliably prove.
+- Consumers can take compatible package revisions without accepting a changed public contract.
+- Optional capabilities can evolve without forcing every existing consumer to move.
 
 ### Negative / risks
 
@@ -219,6 +280,7 @@ Even then, supporting multiple contract generations can provide a migration wind
 - In-process .NET loading of multiple contract assemblies requires deliberate dependency isolation and resolution.
 - Old contract generations require an explicit retirement policy eventually.
 - Compatibility adapters inside an implementation may accumulate complexity if generations live indefinitely.
+- Strictly immutable contract generations may produce more major contract generations over time if the initial contracts are too narrow.
 
 ## Open questions
 
@@ -228,5 +290,5 @@ Even then, supporting multiple contract generations can provide a migration wind
 - How should contract-generation metadata be represented in plugin discovery?
 - Should conformance evidence be embedded in release metadata or merely enforced by CI?
 - How will the initial in-process assembly loader isolate dependencies when multiple generations coexist?
-- Should compatible additive revisions exist inside a generation, or should a generation be immutable once published?
 - What exact tests constitute the minimum Engine contract conformance suite?
+- How should optional capability contracts themselves be versioned and tested?
