@@ -2,13 +2,13 @@
 
 > **Decision Status: Exploration**
 
-This directory records the current architectural exploration for Engine. It is intentionally a design workspace: terminology and proposed decisions should be expected to evolve as the model is tested against real infrastructure domains and deployment targets.
+This directory records the current architectural exploration for Engine. It is intentionally a design workspace: terminology and proposed decisions should be expected to evolve as the model is tested against real infrastructure domains and deployment Targets.
 
 ## Working premise
 
 Engine is an infrastructure intent compiler.
 
-It accepts declarative infrastructure intent, interprets that intent using infrastructure Semantic Models supplied by independently owned Integrations, constructs a deterministic intermediate representation, lowers that representation through an Integration Backend into a Target contract, and emits a versioned Artifact Bundle.
+It accepts declarative infrastructure Intent, interprets that Intent using infrastructure Semantic Models supplied by independently owned Integrations, constructs a deterministic intermediate representation, lowers that representation through an Integration Backend into a Target contract, and emits a versioned Artifact Bundle.
 
 ```text
 Source Intent
@@ -62,18 +62,18 @@ The architecture should describe infrastructure independently of the mechanism e
 
 Intent declares what infrastructure is desired. It does not need to carry the complete definition of what every infrastructure concept means. That domain knowledge belongs to a Semantic Model supplied by an Infrastructure Integration and is applied during Semantic Analysis.
 
-Terraform is an important target, but it should not define the Engine's resource model. Targets such as ARM, Bicep, CloudFormation, Terraform, OpenTofu, Ansible, and future deployment technologies should be able to coexist without modifying Engine Core.
+Terraform is an important target, but it should not define the Engine's resource model. Distinct deployment technologies such as ARM, Bicep, CloudFormation, Terraform, OpenTofu, Ansible, and future Targets should be able to coexist without modifying Engine Core.
 
 This gives the architecture a deliberate separation:
 
 - **Intent** declares desired infrastructure.
-- **Integrations** own infrastructure-domain knowledge and domain-to-target mappings.
+- **Integrations** own infrastructure-domain knowledge and domain-to-Target mappings.
 - **Semantic Models** define the meaning and rules of infrastructure domains.
 - **Semantic Analysis** applies domain meaning to Intent and resolves it.
 - **Infrastructure IR** represents resolved infrastructure meaning.
-- **Backends** map an Integration's resolved semantics into a published Target contract.
-- **Targets** own deployment-technology models, validation, and emission.
-- **Emitters** turn target models into physical artifacts.
+- **Backends** map an Integration's resolved semantics into one published Target contract.
+- **Targets** own deployment-technology models, validation, conformance, and emission.
+- **Emitters** turn Target models into physical artifacts.
 
 ## Infrastructure Integrations
 
@@ -90,7 +90,7 @@ VCFA Integration
     |
     +-- VCFA Semantic Model
     +-- VCFA -> Terraform Backend
-    +-- VCFA -> another supported Target Backend
+    +-- VCFA -> OpenTofu Backend
 ```
 
 A change to the VCFA domain, such as adding a new resource type, should require a VCFA Integration change rather than an Engine Core change when the existing generic contracts are sufficient.
@@ -101,7 +101,7 @@ A Semantic Model is the authoritative definition of an infrastructure domain's c
 
 It is deliberately broader than a collection of resource schemas. Resource definitions are part of a Semantic Model, but the model also defines the domain behavior necessary to determine whether Intent is meaningful and valid.
 
-A Semantic Model SHALL remain independent of deployment targets. For example, it may define that a virtual machine has a required relationship to a network, but it does not decide how that relationship becomes a Terraform address, Bicep expression, CloudFormation reference, or other target-specific construct.
+A Semantic Model SHALL remain independent of deployment Targets. For example, it may define that a virtual machine has a required relationship to a network, but it does not decide how that relationship becomes a Terraform address, Bicep expression, CloudFormation reference, or other Target-specific construct.
 
 ## Extension model
 
@@ -110,8 +110,8 @@ The current exploration identifies these principal extension boundaries:
 1. **Adapters** - external source representations to parsed Intent.
 2. **Infrastructure Integrations** - independently owned infrastructure domains.
 3. **Semantic Models** - domain concepts, resource types, identities, constraints, defaults, relationships, and semantic rules exposed by an Integration.
-4. **Backends** - Integration-owned mappings from Infrastructure IR to a published Target contract.
-5. **Targets and Emitters** - deployment-technology models and physical artifact generation.
+4. **Backends** - Integration-owned mappings from Infrastructure IR to one published Target contract.
+5. **Targets and Emitters** - deployment-technology models, conformance contracts, validation, and physical artifact generation.
 
 These boundaries are intended to permit independently developed Integrations and Targets without changes to Engine Core.
 
@@ -121,15 +121,17 @@ The Engine's canonical resolved representation is currently envisioned as an Inf
 
 The graph contains typed resources with stable identities, properties, explicit relationships, resolved references, and deterministic dependency edges.
 
-The graph is semantic. It should not contain Terraform resource blocks, Bicep syntax, CloudFormation templates, file paths, or other target-specific representation concerns.
+The graph is semantic. It should not contain Terraform resource blocks, Bicep syntax, CloudFormation templates, file paths, or other Target-specific representation concerns.
 
 The Infrastructure IR should be common in structure without requiring unrelated infrastructure domains to share artificial universal resource semantics.
 
 ## Targets and Backend compatibility
 
-A Target represents a deployment technology through a published, versioned contract.
+A Target represents one distinct deployment technology through a published, versioned contract.
 
-A Backend is a mapping between an Integration's infrastructure semantics and that Target contract. This means a Backend should not merely assume that a target implementation with a matching name will work; compatibility must be explicit and testable.
+Shared syntax, ancestry, or implementation details do not imply a shared Target identity. Terraform and OpenTofu, for example, are modeled as separate Targets. If an Integration supports both, it explicitly supplies Backend support for both.
+
+A Backend is a mapping between an Integration's infrastructure semantics and one Target contract. Compatibility must therefore be explicit and testable; it is not inferred from matching names, shared syntax, or common ancestry.
 
 For example:
 
@@ -146,31 +148,35 @@ VCFA Integration
                               - validation
                               - HCL emitter
                               - JSON emitter
+                              - Backend conformance suite
 ```
 
-Multiple Integrations may reuse the same Target, and an Integration may support multiple Targets:
+Multiple Integrations may independently support the same Target, and an Integration may support multiple distinct Targets:
 
 ```text
-VCFA ----+
-GCP -----+----> Terraform Target ----> HCL
-Azure ---+
+VCFA  ------> Terraform Backend ---+
+GCP   ------> Terraform Backend ---+--> Terraform Target
+Azure ------> Terraform Backend ---+
 
 Azure Integration
     |
-    +--> Terraform Target
-    +--> Bicep Target
-    +--> ARM Target
+    +--> Terraform Backend      --> Terraform Target
+    +--> OpenTofu Backend       --> OpenTofu Target
+    +--> Bicep Backend          --> Bicep Target
+    +--> ARM Backend            --> ARM Target
 ```
 
-Initial target families under consideration include ARM, Bicep, CloudFormation, Terraform, OpenTofu, and Ansible. This is an architectural horizon, not a commitment to implement every target immediately.
+A new Target does not create automatic compatibility for existing Integrations. Integration authors add explicit Backend support when they choose to support that Target.
 
-Published Target contracts should eventually include reusable conformance tests so Integration authors can verify their Backends independently.
+Implementations are free to share internal code between similar Targets or Backends, but such reuse is not represented as a Target family or compatibility profile in Engine's public architecture.
+
+Every published Target SHALL provide a versioned Backend conformance suite. Every Backend SHALL pass the applicable Target conformance suite before claiming compatibility with that Target and Target contract version.
 
 ## Artifact contract
 
 Compilation produces an Artifact Bundle rather than an unstructured collection of files.
 
-The bundle should eventually define a stable contract for generated artifacts, diagnostics, target information, version information, provenance, and potentially the resolved graph used to produce the output.
+The bundle should eventually define a stable contract for generated artifacts, diagnostics, Target information, version information, provenance, and potentially the resolved graph used to produce the output.
 
 The exact bundle schema remains open.
 
@@ -199,8 +205,8 @@ The following remain deliberately unresolved:
 - How are plugin assemblies discovered, versioned, trusted, and loaded?
 - What is the Target contract/version compatibility model?
 - Are Target contracts distributed separately from Target implementations?
-- What belongs in a reusable Target conformance test kit?
-- Can compatible technologies such as Terraform and OpenTofu share some Target contracts or IR components without conflating their independent lifecycles?
+- What is the minimum mandatory content of every Backend conformance suite?
+- How are conformance suites packaged and consumed by Integration developers?
 - How do Targets such as Ansible fit if IR-plus-Emitter is not their natural architecture?
 - What belongs in the Artifact Bundle contract?
 - What is the first vertical slice that proves the architecture?
