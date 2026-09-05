@@ -6,122 +6,193 @@
 
 ## Context
 
-Infrastructure intent may be deployable through different target technologies.
+Infrastructure Intent may be deployable through different deployment technologies.
 
-Terraform provides broad cross-platform coverage, while cloud-native representations such as Azure Bicep or AWS CloudFormation may be preferable for some domains. Other infrastructure technologies may introduce additional targets in the future.
+Terraform provides broad cross-platform coverage, while technologies such as Azure Bicep or AWS CloudFormation may be preferable for some domains. OpenTofu, Ansible, and future technologies may introduce additional Targets.
 
-The architecture should allow target integrations to be developed independently without making Engine Core aware of every target. At the same time, it should avoid speculative abstraction and should not require multiple target implementations merely to justify an interface.
+The architecture should allow Integrations and Targets to be developed independently without making Engine Core aware of every infrastructure domain or deployment technology.
 
-Target translation and physical serialization are also different responsibilities. Mapping a resolved VCFA resource into Terraform semantics is not the same concern as correctly serializing a Terraform model into HCL files.
+Domain-to-Target translation and Target emission are different responsibilities. Mapping a resolved SDDC Flex resource into Terraform semantics is not the same concern as validating and serializing a Terraform model into HCL files.
 
 ## Proposed decision
 
-Separate target generation into **Backend**, **Target IR**, and **Emitter** responsibilities.
+Separate Target generation into **Integration Backend**, **Target model / Target IR**, and **Target emission** responsibilities.
 
 ```text
-Infrastructure IR
-    |
-    v
-Backend
-    |
-    v
-Target IR
-    |
-    v
-Emitter
-    |
-    v
+Infrastructure IR / Resource Graph
+        |
+        v
+Integration Backend
+        |
+        v
+Target Abstractions
+(Target model / Target IR)
+        |
+        v
+Target
+(validation + emission)
+        |
+        v
 Artifacts
 ```
 
-### Backend
+### Integration Backend
 
-A Backend lowers resolved Infrastructure IR into a target-specific IR.
+A Backend is owned by an Infrastructure Integration and lowers that Integration's resolved typed domain resources into one specific published Target contract.
 
-The Backend understands both the source infrastructure semantics relevant to its integration and the target deployment model.
+The Backend therefore bridges two strongly typed contracts:
+
+```text
+Domain Abstractions
+        |
+        v
+      Backend
+        |
+        v
+Target Abstractions
+```
 
 Examples:
 
 ```text
-VCFA semantics -> Terraform Backend -> Terraform IR
-Azure semantics -> Terraform Backend -> Terraform IR
-Azure semantics -> Bicep Backend -> Bicep IR
-AWS semantics -> CloudFormation Backend -> CloudFormation IR
+SddcFlex.Abstractions -> SddcFlex.Backend.Terraform -> Terraform.Target.Abstractions
+SddcFlex.Abstractions -> SddcFlex.Backend.OpenTofu  -> OpenTofu.Target.Abstractions
+Azure.Abstractions    -> Azure.Backend.Bicep        -> Bicep.Target.Abstractions
+AWS.Abstractions      -> AWS.Backend.CloudFormation -> CloudFormation.Target.Abstractions
 ```
 
-### Target IR
+A Backend SHALL NOT reinterpret raw Intent to recover domain information that should have survived semantic analysis. It consumes the lossless resolved Resource Graph.
 
-A Target IR represents the concepts of a deployment target in a form suitable for deterministic emission.
+### Target model / Target IR
 
-Unlike Infrastructure IR, a Target IR is expected to be target-shaped.
+A Target Abstractions contract defines the public model a Backend must construct for that deployment technology.
 
-A Terraform IR may therefore contain Terraform resources, data sources, providers, variables, outputs, expressions, references, and dependency constructs.
+Unlike Infrastructure IR, a Target model is expected to be Target-shaped.
 
-### Emitter
+A Terraform Target contract may therefore contain Terraform resources, data sources, providers, variables, outputs, expressions, references, and dependency constructs.
 
-An Emitter serializes a Target IR into physical artifacts.
+The exact internal architecture of a Target is not required to use a rich IR when that does not fit the technology. The public requirement is a stable contract that Backends can produce and the Target can validate and consume.
 
-An Emitter SHALL NOT infer infrastructure semantics or reinterpret unresolved source intent.
+### Target and Emitter
+
+A Target owns validation and physical emission of its Target model. It may contain one or more Emitters when multiple physical representations are useful.
+
+An Emitter SHALL NOT infer infrastructure-domain semantics or reinterpret unresolved source Intent.
 
 Examples:
 
 ```text
-Terraform IR -> HCL Emitter -> .tf files
-Terraform IR -> Terraform JSON Emitter -> .tf.json files
-CloudFormation IR -> YAML Emitter -> template.yaml
-CloudFormation IR -> JSON Emitter -> template.json
+Terraform Target model -> HCL Emitter            -> .tf files
+Terraform Target model -> Terraform JSON Emitter -> .tf.json files
+CloudFormation model   -> YAML Emitter           -> template.yaml
+CloudFormation model   -> JSON Emitter           -> template.json
 ```
 
-## Extensibility goal
+Emitter is a Target responsibility and is not required to be an independently loaded Engine plugin.
 
-The Engine SHALL permit independently developed backends and emitters without modification to Engine Core.
+## Extensibility model
 
-This is a design goal, not a commitment to a specific plugin loading mechanism.
+The principal independently loaded extension types are Adapters, Integrations, and Targets.
 
-A third party should ultimately be able to implement a new target integration using published Engine contracts and package it independently.
+Backends are Integration-owned and may be packaged with an Integration or separately when ownership and release cadence justify it. Emitters are Target-owned and may be internal components of a Target.
+
+This keeps the runtime extension model smaller than the conceptual architecture.
+
+A third party should be able to implement an Integration and its Backend using published Engine, Domain, and Target Abstractions without referencing Engine or Target implementation internals.
+
+## Backend and Target dependencies
+
+A Backend may depend on:
+
+```text
+Engine.Abstractions
+<Integration>.Abstractions
+<Target>.Target.Abstractions
+```
+
+It SHALL NOT depend on the concrete Target implementation.
+
+For example:
+
+```text
+SddcFlex.Backend.Terraform
+    -> Engine.Abstractions
+    -> SddcFlex.Abstractions
+    -> Terraform.Target.Abstractions
+
+Terraform.Target
+    -> Terraform.Target.Abstractions
+```
+
+Engine composes the Backend and Target at runtime only after verifying explicit Target identity and supported contract generation.
+
+## Distinct Targets
+
+Distinct deployment technologies are modeled as distinct Targets even when they share syntax, ancestry, or implementation behavior.
+
+Terraform and OpenTofu are therefore separate Targets. An Integration that supports both provides explicit Backend support for both.
+
+Engine SHALL NOT introduce a Target-family or compatibility-profile abstraction solely to deduplicate similar technologies. Implementations may share internal libraries where useful.
+
+## Contract evolution and conformance
+
+Backend/Target compatibility is based on explicit contract generations rather than Target implementation-version ranges.
+
+Every published Target SHALL provide a versioned Backend conformance suite. Every Backend claiming compatibility with a Target contract generation SHALL pass that generation's suite.
+
+Published contract generations are immutable in their required public shape and semantics as defined by ADR-007. A newer Target implementation may continue supporting older contract generations only while it explicitly advertises and demonstrates that support through conformance.
+
+The Backend author decides when to migrate to a newer Target contract generation. The existence of a newer generation does not itself invalidate an older supported Backend.
 
 ## Rationale
 
-Separating backend lowering from emission prevents target serialization concerns from accumulating infrastructure-domain behavior.
+Separating Backend lowering from Target validation and emission prevents Target serialization concerns from accumulating infrastructure-domain behavior and prevents Integrations from duplicating common Target behavior.
 
-It also creates reuse. Multiple infrastructure domains can lower into the same Target IR and share an emitter. Likewise, one Target IR can support multiple physical representations where the target permits it.
+Strongly typed Domain Abstractions on the input side and Target Abstractions on the output side give the Backend a precise responsibility: translate one published semantic contract into another.
 
-This architecture allows Terraform to be a first-class and deeply supported target without making Terraform the Engine's canonical model.
+This architecture allows Terraform to be a first-class and deeply supported Target without making Terraform Engine's canonical model and allows similar but independently evolving technologies such as OpenTofu to remain explicit.
 
 ## Consequences
 
 ### Positive
 
-- Target integrations can evolve independently of Engine Core.
-- Common emitters can be reused across infrastructure domains.
-- Target-specific concepts remain on the target side of the architecture boundary.
-- Native cloud targets and cross-cloud targets can coexist.
-- Testing can distinguish semantic lowering failures from serialization failures.
+- Integrations and Targets can evolve independently of Engine Core.
+- Backends have a precise domain-to-Target responsibility.
+- Strong typing exists on both sides of Backend lowering.
+- Target validation and emission can be reused across multiple infrastructure Integrations.
+- Target-specific concepts remain outside Engine Core.
+- Testing can distinguish semantic-analysis, Backend-lowering, Target-validation, and emission failures.
+- Implementation releases need not force downstream rebuilds while contract generations remain supported.
 
 ### Negative / risks
 
-- Backend versus Emitter may be confusing if their responsibilities are not rigorously documented.
-- Some targets may not justify a rich Target IR and separate emitter.
-- A generic plugin system can introduce versioning, trust, dependency loading, and compatibility complexity.
-- Independently developed extensions create a long-term contract-compatibility obligation.
+- Backend versus Target responsibility must remain rigorously documented.
+- Each Integration/Target combination requires explicit Backend support.
+- Public Domain and Target contracts create long-term compatibility obligations.
+- In-process plugin loading introduces type-identity and dependency-isolation concerns.
+- Some Targets may not naturally use an IR-plus-Emitter architecture and must not be forced into one.
 
 ## Guardrails
 
-- Engine Core must not contain target-specific semantic branches.
-- Emitters must not resolve infrastructure semantics.
-- Backends must not depend on source document layout when equivalent information is available in Infrastructure IR.
-- Do not require a separate repository for every interface implementation.
-- Do not introduce remote/distributed plugin execution unless a concrete requirement justifies it.
+- Engine Core SHALL NOT contain Target-specific semantic branches.
+- Backends SHALL NOT depend on raw source layout or raw Intent when equivalent resolved information belongs in Infrastructure IR.
+- Backends SHALL NOT reference concrete Target implementations.
+- Backends SHALL NOT redefine domain semantics owned by their Integration.
+- Targets and Emitters SHALL NOT resolve infrastructure-domain semantics.
+- Emitters are Target responsibilities, not mandatory independent plugins.
+- Distinct deployment technologies SHALL remain distinct Targets unless repeated evidence demonstrates a genuine shared public abstraction.
+- Do not require a separate repository for every architectural interface.
+- Do not introduce remote/distributed plugin execution without a concrete requirement.
 
 ## Packaging and repositories
 
 Architecture boundaries do not automatically dictate repository boundaries.
 
-The Engine itself is currently expected to be developed as a monorepo because its compiler phases and contracts will evolve together.
+Engine itself is currently expected to be developed as a monorepo because its compiler phases and contracts will evolve together.
 
-An infrastructure integration may reasonably keep its Semantic Model and one or more Backends in a single repository if they share ownership and release cadence.
+An Infrastructure Integration may keep its Semantic Model, Domain Abstractions, and one or more Backends in a single repository when they share ownership. A Backend may be separately packaged when it has an independent release cadence.
 
-Shared Target IRs and Emitters may live with Engine or in independent repositories depending on their lifecycle. This remains deliberately undecided.
+A Target owns its Target Abstractions, implementation, Emitters, and conformance suite. These may be one repository with multiple packages or separate repositories according to real ownership and lifecycle needs.
 
 ## Alternatives considered
 
@@ -129,26 +200,31 @@ Shared Target IRs and Emitters may live with Engine or in independent repositori
 
 Allow each Backend to generate physical files itself.
 
-Simpler initially, but it duplicates serialization behavior and encourages infrastructure semantics, target semantics, and file generation to become entangled.
+Rejected as the primary architecture because it duplicates Target serialization behavior and encourages infrastructure semantics, Target semantics, and file generation to become entangled.
 
-### Terraform as the only target contract
+### Terraform as the only Target contract
 
-Make Terraform the sole target representation and extension surface.
+Make Terraform the sole Target representation and extension surface.
 
-Not proposed because cloud-native deployment targets are legitimate alternatives and because third-party target extensibility is an explicit goal.
+Rejected because other deployment technologies are legitimate Targets and third-party Target extensibility is an explicit goal.
 
 ### Universal emitter interface over strings/files
 
-Have all target integrations return arbitrary file content.
+Have all Target integrations return arbitrary file content.
 
-Rejected as the primary model because it removes a useful target-model boundary and makes deterministic validation of target output more difficult.
+Rejected as the primary model because it removes a useful Target-model boundary and makes deterministic validation of Target output more difficult.
+
+### Target families or profiles
+
+Represent similar technologies such as Terraform and OpenTofu through a shared family/profile abstraction.
+
+Rejected for now. Similarity does not establish durable compatibility, and the additional profile-version dimension would complicate Backend ownership and compatibility without demonstrated need.
 
 ## Open questions
 
-- What is the minimum viable Backend contract?
-- Does each infrastructure-domain/target pair require its own Backend, or can mappings be composed?
-- Which Target IRs should Engine maintain as first-party components?
-- How are backend and emitter capabilities discovered?
-- How are extension compatibility and API versions negotiated?
-- Should extensions execute in-process initially?
-- What trust/signing model is eventually required for third-party extensions?
+- What is the exact generic Backend interface and runtime invocation bridge?
+- What is the minimum common metadata every Backend and Target must expose?
+- How are Backend and Target capabilities discovered without unnecessary plugin activation?
+- How are incompatible contract generations isolated in the initial in-process plugin model?
+- Which validation belongs in Target conformance versus the concrete Target runtime?
+- How should a Target such as Ansible fit when a traditional Target IR plus Emitter is not its natural internal architecture?
