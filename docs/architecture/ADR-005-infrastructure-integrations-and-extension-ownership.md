@@ -8,11 +8,13 @@
 
 Engine is intended to compile infrastructure Intent without requiring Engine Core to understand every infrastructure domain or deployment technology.
 
-Infrastructure domains evolve independently. A platform may add resource types, capabilities, constraints, or relationships without any corresponding change to the compiler itself. Likewise, deployment targets such as Terraform, OpenTofu, Bicep, ARM, CloudFormation, or Ansible evolve independently of the infrastructure domains they can represent.
+Infrastructure domains evolve independently. A platform may add resource types, capabilities, constraints, or relationships without any corresponding change to the compiler itself. Likewise, deployment Targets such as Terraform, OpenTofu, Bicep, ARM, CloudFormation, or Ansible evolve independently of the infrastructure domains they can represent.
 
 The architecture therefore needs an ownership boundary that allows an infrastructure-domain author to extend Engine without modifying Engine Core and without requiring Engine maintainers to own the lifecycle of that domain.
 
-It also needs a compatibility boundary between an infrastructure Integration and a deployment Target. An Integration may know how its domain semantics map to Terraform, for example, but it should not own Terraform's common model, validation rules, or physical HCL emission. Conversely, a Terraform Target cannot know how every possible infrastructure domain maps into Terraform.
+It also needs a compatibility boundary between an infrastructure Integration and a deployment Target. An Integration may know how its domain semantics map to Terraform, for example, but it should not own Terraform's common model, validation rules, or physical emission. Conversely, a Terraform Target cannot know how every possible infrastructure domain maps into Terraform.
+
+Technologies may share syntax, ancestry, concepts, or implementation libraries while remaining independently evolving deployment technologies. Terraform and OpenTofu are an immediate example. Engine should not introduce target-family or profile abstractions merely because two Targets currently have substantial overlap.
 
 ## Proposed decision
 
@@ -37,7 +39,7 @@ An Integration exposes at least:
 
 - stable integration identity and version information;
 - a Semantic Model for its infrastructure domain;
-- one or more Backend implementations or Backend capabilities for supported Targets;
+- one or more Backend implementations for explicitly supported Targets;
 - compatibility metadata required by the Engine contracts.
 
 An illustrative contract might resemble:
@@ -64,7 +66,7 @@ An Integration author owns:
 - domain identities, constraints, defaults, relationships, and semantic rules;
 - compatibility with changes to the upstream infrastructure platform;
 - domain-to-target Backend mappings;
-- tests proving the Integration satisfies Engine and Target contracts;
+- conformance of every Backend with each Target it claims to support;
 - the Integration's release and version lifecycle.
 
 An Integration author may construct its Semantic Model using any appropriate implementation technique, including hand-written code, generated definitions, reflection, source generation, upstream API schemas, provider metadata, internal libraries, or a combination of these.
@@ -92,9 +94,9 @@ How discovery and dependency isolation are implemented remains a separate decisi
 
 ## Targets
 
-A **Target** represents a deployment technology understood by Engine through a stable target contract.
+A **Target** represents a distinct deployment technology understood by Engine through a stable target contract.
 
-Initial target families are expected to include technologies such as:
+Potential Targets include:
 
 - Terraform;
 - OpenTofu;
@@ -103,7 +105,23 @@ Initial target families are expected to include technologies such as:
 - AWS CloudFormation;
 - Ansible.
 
-This list is illustrative rather than exhaustive or a commitment that all targets will be implemented initially.
+This list is illustrative rather than exhaustive or a commitment that all Targets will be implemented initially.
+
+Each distinct deployment technology is modeled as its own Target. Shared syntax, ancestry, or implementation details do not imply a shared Target identity.
+
+For example, Terraform and OpenTofu are separate Targets. If an Integration supports both, it explicitly provides Backend support for both:
+
+```text
+VCFA Integration
+    |
+    +-- VCFA -> Terraform Backend -> Terraform Target
+    |
+    +-- VCFA -> OpenTofu Backend  -> OpenTofu Target
+```
+
+Engine does not define a Terraform/OpenTofu target family, compatibility profile, or shared public Target abstraction merely to represent their overlap.
+
+Implementations remain free to share internal libraries, mapping helpers, target-model components, emitters, or tests where useful. Such reuse is an implementation decision and does not change the public Engine architecture.
 
 A Target owns the concepts that are common to that deployment technology. Depending on the technology, this may include:
 
@@ -112,7 +130,8 @@ A Target owns the concepts that are common to that deployment technology. Depend
 - target validation;
 - serialization and emission rules;
 - one or more Emitters;
-- a versioned compatibility contract that Backends can compile against.
+- a versioned compatibility contract that Backends can compile against;
+- a versioned Backend conformance test suite.
 
 For example:
 
@@ -124,22 +143,26 @@ Terraform Target
     +-- Terraform validation
     +-- HCL Emitter
     +-- Terraform JSON Emitter
+    +-- Backend Conformance Suite
 ```
 
 ## Backend compatibility
 
-A Backend is a mapping between an Infrastructure Integration's semantics and a specific Target contract.
+A Backend is a mapping between an Infrastructure Integration's semantics and one specific Target contract.
 
 It is therefore more precise to describe Backends as domain-to-target mappings:
 
 ```text
-VCFA Integration -> Terraform Backend -> Terraform Target
-GCP Integration  -> Terraform Backend -> Terraform Target
-Azure Integration -> Bicep Backend    -> Bicep Target
+VCFA Integration  -> Terraform Backend      -> Terraform Target
+VCFA Integration  -> OpenTofu Backend       -> OpenTofu Target
+GCP Integration   -> Terraform Backend      -> Terraform Target
+Azure Integration -> Bicep Backend          -> Bicep Target
 AWS Integration   -> CloudFormation Backend -> CloudFormation Target
 ```
 
 An Integration that implements a Terraform Backend SHALL compile against a published, versioned Terraform Target contract rather than relying on private implementation details of the Terraform Target.
+
+An Integration that also supports OpenTofu SHALL explicitly provide an OpenTofu Backend that compiles against the published OpenTofu Target contract. Similarity between Terraform and OpenTofu does not imply compatibility.
 
 This creates an explicit compatibility relationship:
 
@@ -159,13 +182,17 @@ Engine
 
 The same principle applies to Bicep, ARM, CloudFormation, Ansible, OpenTofu, and future Targets.
 
-The exact compatibility mechanism is intentionally undecided, but compatibility MUST be explicit and testable rather than assumed from matching target names.
+The exact version-negotiation mechanism is intentionally undecided, but compatibility MUST be explicit and testable rather than assumed from matching target names, shared syntax, or common ancestry.
 
-## Contract testing
+## Backend conformance testing
 
-Published Target contracts SHOULD provide reusable conformance or contract tests that Integration authors can execute against their Backends.
+Every published Target SHALL provide a versioned Backend conformance test suite that Integration authors can execute against Backends claiming compatibility with that Target.
 
-An Integration author should be able to establish compatibility before publication without requiring the Engine team or Target maintainer to modify their projects.
+Every Backend SHALL pass the applicable Target conformance suite before it may claim compatibility with that Target and Target contract version.
+
+Conformance testing is part of the Target contract, not optional guidance.
+
+An Integration author must be able to establish compatibility before publication without requiring the Engine team or Target maintainer to modify the Integration project.
 
 Conceptually:
 
@@ -173,16 +200,36 @@ Conceptually:
 Integration Backend
        |
        v
-Target Contract Test Kit
+Target Backend Conformance Suite
        |
-       +-- model validity
-       +-- supported constructs
+       +-- target model validity
+       +-- supported contract constructs
        +-- deterministic lowering
        +-- target compatibility
        +-- diagnostic expectations
+       +-- required failure behavior
+       |
+       v
+   pass / fail
 ```
 
-Runtime compatibility checks complement these tests but do not replace them.
+A Backend supporting multiple Targets must independently satisfy each Target's conformance suite.
+
+For example:
+
+```text
+VCFA -> Terraform Backend
+       |
+       +--> Terraform Conformance Suite --> PASS
+
+VCFA -> OpenTofu Backend
+       |
+       +--> OpenTofu Conformance Suite  --> PASS
+```
+
+Passing conformance tests establishes compliance with the published Target contract. It does not prove that every domain-specific semantic mapping is correct; that remains the responsibility of the Integration author and its own domain tests.
+
+Runtime compatibility checks complement conformance testing but do not replace it.
 
 ## Target independence and reuse
 
@@ -190,33 +237,38 @@ Targets and Integrations have independent ownership and release lifecycles.
 
 A Target does not contain infrastructure-domain semantics. An Integration does not own the common implementation of a Target.
 
-This allows multiple Integrations to reuse the same Target:
+Multiple Integrations can independently support the same Target:
 
 ```text
-VCFA ----+
-GCP -----+----> Terraform Target ----> HCL
-Azure ---+
+VCFA  ------> Terraform Backend ---+
+GCP   ------> Terraform Backend ---+--> Terraform Target
+Azure ------> Terraform Backend ---+
 ```
 
-and allows one Integration to support multiple Targets:
+One Integration may support multiple distinct Targets:
 
 ```text
 Azure Integration
     |
-    +--> Terraform Target
-    +--> Bicep Target
-    +--> ARM Target
+    +--> Terraform Backend      --> Terraform Target
+    +--> OpenTofu Backend       --> OpenTofu Target
+    +--> Bicep Backend          --> Bicep Target
+    +--> ARM Backend            --> ARM Target
 ```
 
 Not every Integration is required to support every Target.
+
+If a new Target is introduced, existing Integrations do not automatically support it. An Integration author explicitly adds a Backend for that Target when support is desired.
 
 ## Rationale
 
 This boundary aligns responsibility with the party most capable of maintaining it.
 
-Engine maintainers own a stable compiler and extension contract. Infrastructure-domain authors own their domain. Target authors own deployment-technology semantics and representation. Backend authors explicitly bridge the two contracts.
+Engine maintainers own a stable compiler and extension contract. Infrastructure-domain authors own their domain. Target authors own deployment-technology semantics and representation. Backend authors explicitly bridge the Integration and Target contracts.
 
-A versioned Target contract prevents a Backend from merely hoping that a particular Terraform, Bicep, or other Target implementation remains compatible. It gives Integration authors something concrete to compile against and test against.
+A versioned Target contract prevents a Backend from merely hoping that a particular Terraform, Bicep, or other Target implementation remains compatible. Mandatory conformance testing gives Integration authors an executable definition of that compatibility.
+
+Treating distinct deployment technologies as distinct Targets keeps the public architecture simple and explicit. Similar technologies can reuse implementation internally without requiring Engine to predict how long that similarity will remain valid.
 
 The in-process .NET assembly model provides the simplest viable extensibility mechanism for the initial architecture while leaving room for stronger isolation or alternative packaging later if real requirements justify them.
 
@@ -228,8 +280,10 @@ The in-process .NET assembly model provides the simplest viable extensibility me
 - Third parties can independently own and release Integrations.
 - Integration implementation details remain private to the Integration author.
 - Targets can be reused by multiple infrastructure domains.
-- Backend/Target compatibility becomes explicit and testable.
+- Backend/Target compatibility is explicit, versioned, and executable through required conformance tests.
 - Target maintainers can evolve target implementations behind versioned contracts.
+- Similar Targets can share implementation without coupling their public identities.
+- New Targets do not create implicit support obligations for existing Integrations.
 - The initial plugin mechanism remains straightforward for .NET developers.
 
 ### Negative / risks
@@ -237,7 +291,8 @@ The in-process .NET assembly model provides the simplest viable extensibility me
 - Engine and Target contracts become public compatibility commitments.
 - Version negotiation must eventually handle incompatible combinations clearly.
 - In-process plugins can create dependency-loading and isolation problems.
-- Contract tests cannot prove every semantic mapping is correct; Integration authors still own domain correctness.
+- Integration authors supporting similar Targets may write multiple Backend adapters, even when much of the implementation can be shared internally.
+- Conformance tests cannot prove every semantic mapping is correct; Integration authors still own domain correctness.
 - Some technologies may not fit the same Target IR/Emitter shape cleanly and must not be forced into an artificial abstraction.
 
 ## Guardrails
@@ -246,6 +301,11 @@ The in-process .NET assembly model provides the simplest viable extensibility me
 - Target implementations SHALL NOT contain infrastructure-domain semantics.
 - Integration authors SHALL NOT depend on private Target implementation details.
 - Backend compatibility with a Target MUST be expressed through a published contract.
+- Every published Target SHALL provide a versioned Backend conformance test suite.
+- Every Backend SHALL pass the applicable conformance suite before claiming Target compatibility.
+- Distinct deployment technologies SHALL be represented as distinct Targets even when they share syntax, ancestry, or substantial implementation behavior.
+- Engine SHALL NOT introduce target families or compatibility profiles solely to deduplicate similar Targets.
+- Shared implementation between similar Targets or Backends is permitted but remains outside the Engine's public architecture.
 - Engine SHALL NOT require a separate manifest file merely to duplicate information available through the plugin contract.
 - Engine SHALL NOT prescribe how an Integration internally constructs its Semantic Model.
 - A new infrastructure resource type SHALL NOT require an Engine Core change unless it exposes a genuine missing capability in the Engine's generic contracts.
@@ -270,6 +330,12 @@ Place VCFA, GCP, Azure, and other domain mappings inside the Terraform or other 
 
 Rejected because the Target would accumulate knowledge of every infrastructure domain and become a second semantic-model layer.
 
+### Target families or compatibility profiles
+
+Group similar deployment technologies, such as Terraform and OpenTofu, under a shared HCL-family Target or versioned compatibility profile.
+
+Not proposed. Similarity today does not guarantee compatible evolution tomorrow, and profile/version abstractions would add complexity to Engine's public model. Terraform and OpenTofu are therefore modeled as distinct Targets. Authors may share implementation internally where appropriate.
+
 ### External manifest-driven plugin system
 
 Require declarative plugin manifests in addition to plugin assemblies.
@@ -290,7 +356,7 @@ Not proposed initially. This adds substantial operational and compatibility comp
 - How are plugin dependency conflicts isolated?
 - What is the Target contract/version compatibility model?
 - Are Target contracts separate .NET packages from Target implementations?
-- What should a reusable Target conformance test kit contain?
-- Can a Backend support a compatible family of Targets, such as Terraform and OpenTofu, or should each be modeled explicitly?
+- What is the minimum mandatory content of every Backend conformance suite?
+- How are conformance suites packaged, versioned, and consumed by Integration developers?
 - How should Targets that do not naturally use an IR-plus-Emitter architecture, potentially including Ansible, fit without weakening the core boundaries?
 - What trust or signing requirements are needed if third-party plugins are eventually distributed broadly?
