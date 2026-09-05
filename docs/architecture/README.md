@@ -8,7 +8,7 @@ This directory records the current architectural exploration for Engine. It is i
 
 Engine is an infrastructure intent compiler.
 
-It accepts declarative infrastructure Intent, interprets that Intent using infrastructure Semantic Models supplied by independently owned Integrations, constructs a deterministic intermediate representation, lowers that representation through an Integration Backend into a Target contract, and emits a versioned Artifact Bundle.
+It accepts declarative infrastructure Intent, interprets that Intent using infrastructure Semantic Models supplied by independently owned Integrations, constructs a deterministic Resource Graph containing Integration-owned typed resources, lowers that graph through an Integration Backend into a Target contract, and emits a versioned Artifact Bundle.
 
 ```text
 Source Intent
@@ -62,18 +62,20 @@ The architecture should describe infrastructure independently of the mechanism e
 
 Intent declares what infrastructure is desired. It does not need to carry the complete definition of what every infrastructure concept means. That domain knowledge belongs to a Semantic Model supplied by an Infrastructure Integration and is applied during Semantic Analysis.
 
-Terraform is an important target, but it should not define the Engine's resource model. Distinct deployment technologies such as ARM, Bicep, CloudFormation, Terraform, OpenTofu, Ansible, and future Targets should be able to coexist without modifying Engine Core.
+Terraform is an important Target, but it does not define the Engine's resource model. Distinct deployment technologies such as ARM, Bicep, CloudFormation, Terraform, OpenTofu, Ansible, and future Targets may coexist without modifying Engine Core.
 
 This gives the architecture a deliberate separation:
 
 - **Intent** declares desired infrastructure.
+- **Adapters** translate external source representations into parsed Intent.
 - **Integrations** own infrastructure-domain knowledge and domain-to-Target mappings.
+- **Domain Abstractions** define stable, strongly typed resource contracts shared by an Integration and its Backends.
 - **Semantic Models** define the meaning and rules of infrastructure domains.
 - **Semantic Analysis** applies domain meaning to Intent and resolves it.
-- **Infrastructure IR** represents resolved infrastructure meaning.
-- **Backends** map an Integration's resolved semantics into one published Target contract.
+- **Infrastructure IR / Resource Graph** contains resolved Integration-owned typed resource instances plus Engine-owned graph relationships and dependency edges.
+- **Backends** lower resolved domain resources into one published Target contract.
 - **Targets** own deployment-technology models, validation, conformance, and emission.
-- **Emitters** turn Target models into physical artifacts.
+- **Emitters** are Target responsibilities that turn Target models into physical artifacts.
 
 ## Infrastructure Integrations
 
@@ -83,17 +85,20 @@ Engine defines the Integration contract; the Integration author owns the impleme
 
 The initial extension model is an in-process .NET plugin assembly implementing published Engine abstractions.
 
-An Integration owns its Semantic Model and the Backends that map its domain into supported Targets. For example:
+An Integration owns its Semantic Model, Domain Abstractions, and the Backends that map its domain into supported Targets. For example:
 
 ```text
-VCFA Integration
-    |
-    +-- VCFA Semantic Model
-    +-- VCFA -> Terraform Backend
-    +-- VCFA -> OpenTofu Backend
+SddcFlex.Abstractions
+        ^
+        |
+SddcFlex.Integration
+        |
+        +-- Semantic Model
+        +-- SddcFlex -> Terraform Backend
+        +-- SddcFlex -> OpenTofu Backend
 ```
 
-A change to the VCFA domain, such as adding a new resource type, should require a VCFA Integration change rather than an Engine Core change when the existing generic contracts are sufficient.
+A change to the SDDC Flex domain, such as adding a new resource type, should require an Integration/domain-contract change rather than an Engine Core change when the existing generic contracts are sufficient.
 
 ## Semantic Models
 
@@ -105,83 +110,66 @@ A Semantic Model SHALL remain independent of deployment Targets. For example, it
 
 ## Extension model
 
-The current exploration identifies these principal extension boundaries:
+The principal independently loadable extension types are currently:
 
 1. **Adapters** - external source representations to parsed Intent.
-2. **Infrastructure Integrations** - independently owned infrastructure domains.
-3. **Semantic Models** - domain concepts, resource types, identities, constraints, defaults, relationships, and semantic rules exposed by an Integration.
-4. **Backends** - Integration-owned mappings from Infrastructure IR to one published Target contract.
-5. **Targets and Emitters** - deployment-technology models, conformance contracts, validation, and physical artifact generation.
+2. **Infrastructure Integrations** - independently owned infrastructure domains, including Semantic Models, Domain Abstractions, and Backends.
+3. **Targets** - deployment-technology contracts, models, validation, conformance, and emission.
 
-These boundaries are intended to permit independently developed Integrations and Targets without changes to Engine Core.
+Semantic Models, Backends, and Emitters remain important architectural responsibilities, but they are not required to become independently loaded plugin types merely because they are separate concepts.
 
 ## Resource Graph
 
-The Engine's canonical resolved representation is currently envisioned as an Infrastructure IR represented by a Resource Graph.
+The Engine's canonical resolved representation is the Infrastructure IR represented by a deterministic Resource Graph.
 
-The graph contains typed resources with stable identities, properties, explicit relationships, resolved references, and deterministic dependency edges.
+The graph contains concrete Integration-owned strongly typed resources. Engine itself interacts with those resources through a deliberately small common contract, while Integration Backends can consume the full domain types through the Integration's Domain Abstractions.
 
-The graph is semantic. It should not contain Terraform resource blocks, Bicep syntax, CloudFormation templates, file paths, or other Target-specific representation concerns.
+Engine owns graph structure and resolution semantics: stable graph identity, resolved relationships, dependency edges, traversal, cycle detection, deterministic ordering, and reference resolution. Integrations own the typed resource payloads inside the graph.
 
-The Infrastructure IR should be common in structure without requiring unrelated infrastructure domains to share artificial universal resource semantics.
+The graph is lossless for Backend needs: a Backend must not return to raw or parsed Intent merely to recover accepted input properties that should have survived semantic analysis.
+
+The graph is Target-independent. It does not contain Terraform resource blocks, Bicep syntax, CloudFormation templates, file paths, or other Target representation concerns.
+
+See [ADR-008 - Domain Abstractions and Typed Resource Graphs](ADR-008-domain-abstractions-and-typed-resource-graphs.md).
+
+## Contract evolution
+
+Engine, Domain, and Target abstraction contracts follow explicit contract generations rather than inferring compatibility from implementation versions.
+
+Published contract generations are immutable in their required public shape and semantics. Package revisions within a generation may contain non-breaking fixes and tooling changes, but breaking changes require a new independently addressable generation.
+
+A component may advertise support for a contract generation only when it passes that generation's conformance suite. Newer implementations may continue to support older generations, but support is demonstrated rather than assumed.
+
+Consumers choose when to adopt newer contract generations. The existence of V2 or V3 does not force a Backend using V1 to migrate while the supplying implementation continues to support and conform to V1.
+
+See [ADR-007 - Contract Evolution and Compatibility](ADR-007-contract-evolution-and-compatibility.md).
 
 ## Targets and Backend compatibility
 
-A Target represents one distinct deployment technology through a published, versioned contract.
+A Target represents one distinct deployment technology through a published, versioned Target Abstractions contract.
 
-Shared syntax, ancestry, or implementation details do not imply a shared Target identity. Terraform and OpenTofu, for example, are modeled as separate Targets. If an Integration supports both, it explicitly supplies Backend support for both.
+Shared syntax, ancestry, or implementation details do not imply a shared Target identity. Terraform and OpenTofu, for example, are separate Targets. If an Integration supports both, it explicitly supplies Backend support for both.
 
-A Backend is a mapping between an Integration's infrastructure semantics and one Target contract. Compatibility must therefore be explicit and testable; it is not inferred from matching names, shared syntax, or common ancestry.
-
-Every Target publishes a separately versioned Target Abstractions assembly containing the public Target model and contract needed by Backend authors. A Backend references that Abstractions assembly at compile time but SHALL NOT reference the concrete Target implementation.
-
-For example:
+A Backend references Engine Abstractions, its Integration's Domain Abstractions, and the Target Abstractions for the specific Target it supports. It SHALL NOT reference the concrete Target implementation.
 
 ```text
-Vcfa.Integration.Terraform
-    |
-    +--> Engine.Abstractions
-    +--> Terraform.Target.Abstractions
-
-Terraform.Target
-    |
-    +--> Terraform.Target.Abstractions
+SddcFlex.Backend.Terraform
+    -> Engine.Abstractions
+    -> SddcFlex.Abstractions
+    -> Terraform.Target.Abstractions
 ```
 
-The Target Abstractions assembly may expose Target-specific concepts such as resources, expressions, references, variables, outputs, and the Target contract identity/version. These concepts belong to the Target contract rather than Engine Core.
+Every published Target SHALL provide a versioned Backend conformance suite. Every Backend SHALL pass the applicable conformance suite before claiming compatibility with that Target contract generation.
 
-Engine loads the Backend and concrete Target independently at runtime, verifies Target identity and contract-version compatibility, and then composes them.
+Target implementation versions and Target contract generations are separate. Compatibility is based on explicit supported contract generations and conformance evidence rather than package-version ranges.
 
-Multiple Integrations may independently support the same Target, and an Integration may support multiple distinct Targets:
-
-```text
-VCFA  ------> Terraform Backend ---+
-GCP   ------> Terraform Backend ---+--> Terraform Target
-Azure ------> Terraform Backend ---+
-
-Azure Integration
-    |
-    +--> Terraform Backend      --> Terraform Target
-    +--> OpenTofu Backend       --> OpenTofu Target
-    +--> Bicep Backend          --> Bicep Target
-    +--> ARM Backend            --> ARM Target
-```
-
-A new Target does not create automatic compatibility for existing Integrations. Integration authors add explicit Backend support when they choose to support that Target.
-
-Implementations are free to share internal code between similar Targets or Backends, but such reuse is not represented as a Target family or compatibility profile in Engine's public architecture.
-
-Every published Target SHALL provide a versioned Backend conformance suite. Every Backend SHALL pass the applicable Target conformance suite before claiming compatibility with that Target and Target contract version. The conformance package is normally a development/test dependency rather than a production Backend dependency.
-
-Target implementation versions and Target contract versions are separate. A Backend depends on the Target contract version; compatible Target implementation releases may evolve independently behind that contract.
-
-See [ADR-006 - Target Contracts and Backend Dependency Model](ADR-006-target-contracts-and-backend-dependencies.md) for the proposed assembly and dependency model.
+See [ADR-005 - Infrastructure Integrations and Extension Ownership](ADR-005-infrastructure-integrations-and-extension-ownership.md) and [ADR-006 - Target Contracts and Backend Dependency Model](ADR-006-target-contracts-and-backend-dependencies.md).
 
 ## Artifact contract
 
 Compilation produces an Artifact Bundle rather than an unstructured collection of files.
 
-The bundle should eventually define a stable contract for generated artifacts, diagnostics, Target information, version information, provenance, and potentially the resolved graph used to produce the output.
+The bundle should eventually define a stable contract for generated artifacts, diagnostics, Target information, contract-generation information, provenance, and potentially a serializable representation of the resolved graph used to produce the output.
 
 The exact bundle schema remains open.
 
@@ -203,15 +191,17 @@ Integrations and Targets may be developed outside the Engine repository. Reposit
 
 The following remain deliberately unresolved:
 
-- What is the precise boundary between parsed Intent and Infrastructure IR?
-- Is the Resource Graph the entire Infrastructure IR or one representation within it?
-- How strongly typed should Resources and their properties be?
-- What are the exact Integration and Semantic Model contracts?
-- How are plugin assemblies discovered, versioned, trusted, and loaded?
-- What is the exact Target contract/version range and negotiation model?
-- What is the minimum mandatory content of every Backend conformance suite?
-- How does Engine discover Target metadata without activating plugins?
-- How do Targets such as Ansible fit if IR-plus-Emitter is not their natural architecture?
+- What is the exact minimum `IResource` contract beyond `Identity` and `Type`, if anything?
+- What is the exact `IResourceGraph` lookup, resolution, traversal, and ordering API?
+- What is the shape of a typed `ResourceReference<TResource>`?
+- What are the exact `IInfrastructureIntegration` and `ISemanticModel` contracts?
+- How does Engine invoke Integration semantic behavior without depending on Integration implementation types?
+- What is the exact generic Backend contract?
+- What is the minimum mandatory content of Engine, Domain, and Target conformance suites?
+- How are plugin assemblies discovered, loaded, isolated, and trusted, including multiple contract generations in one process?
+- How does Engine discover plugin and contract metadata without eagerly activating plugins?
+- How do Targets such as Ansible fit if IR-plus-Emitter is not their natural internal architecture?
+- How are typed Resource Graphs serialized for diagnostics, provenance, or Artifact Bundles?
 - What belongs in the Artifact Bundle contract?
 - What is the first vertical slice that proves the architecture?
 
@@ -223,5 +213,7 @@ The following remain deliberately unresolved:
 - [ADR-004 - Cloud-Native Operating Principles](ADR-004-cloud-native-operating-principles.md)
 - [ADR-005 - Infrastructure Integrations and Extension Ownership](ADR-005-infrastructure-integrations-and-extension-ownership.md)
 - [ADR-006 - Target Contracts and Backend Dependency Model](ADR-006-target-contracts-and-backend-dependencies.md)
+- [ADR-007 - Contract Evolution and Compatibility](ADR-007-contract-evolution-and-compatibility.md)
+- [ADR-008 - Domain Abstractions and Typed Resource Graphs](ADR-008-domain-abstractions-and-typed-resource-graphs.md)
 
 See also the [working glossary](glossary.md).
