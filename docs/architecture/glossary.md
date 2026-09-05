@@ -116,6 +116,6 @@ For this project, cloud-native principles include stateless execution, declarati
 
 ## Provider
 
-An intentionally avoided Engine architecture term because it is overloaded across cloud providers, Terraform providers, service providers, and prior BAT terminology.
+An intentionally avoided Engine architecture term because it is overloaded across cloud providers, Terraform providers, and service providers.
 
 Use Semantic Model when referring to infrastructure-domain semantics, Backend when referring to lowering into a deployment target, and the specific external technology name when referring to an external provider.
