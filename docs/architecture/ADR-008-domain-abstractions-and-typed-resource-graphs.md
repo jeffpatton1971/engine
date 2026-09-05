@@ -57,13 +57,15 @@ The responsibilities are divided as follows:
 | Domain Abstractions | Define the Integration's public resource types and stable domain contracts shared with Backends. |
 | Integration / Semantic Model | Define and apply domain meaning: resource definitions, constraints, defaults, identity rules, relationships, and semantic rules. |
 | Engine | Orchestrate semantic analysis, resolve identities and references, construct relationships and dependency edges, and produce the deterministic Resource Graph. |
-| Integration Backend | Map resolved domain resources from the Resource Graph into one Target contract. |
+| Integration Backend | Lower resolved domain resources from the Resource Graph into one Target contract. |
 | Target Abstractions | Define the public Target model and compatibility contract. |
 | Target | Validate and emit the Target representation. |
 
 The governing distinction is:
 
-> The Integration defines domain meaning; Engine resolves that meaning into a Resource Graph; the Backend understands the resolved domain resources and maps them into a Target.
+> The Integration defines domain meaning; Engine resolves that meaning into a Resource Graph; the Backend lowers those resolved domain resources into a Target contract.
+
+Engine owns the graph structure and resolution semantics. Integrations own the typed resource payloads represented within that graph. Backends own the translation from those typed resources into Target-specific models.
 
 ## Semantic Model and Resource Graph
 
@@ -122,6 +124,38 @@ These interfaces and types are illustrative rather than accepted API contracts.
 Engine can reason about the resource as an `IResource` while an SDDC Flex Backend can consume the same graph resource as a `VirtualMachineResource` through its dependency on `SddcFlex.Abstractions`.
 
 This preserves strong domain typing without teaching Engine what an SDDC Flex virtual machine is.
+
+## Domain Abstractions and Backend lowering
+
+Domain Abstractions are the stable typed semantic input consumed by Backends.
+
+A Backend is therefore the explicit lowering boundary between a domain model and a Target model:
+
+```text
+Domain Abstractions
+        |
+        v
+      Backend
+        |
+        v
+Target Abstractions
+```
+
+For example:
+
+```text
+SddcFlex.Abstractions
+        |
+        v
+SddcFlex.Backend.Terraform
+        |
+        v
+Terraform.Target.Abstractions
+```
+
+The Backend does not define SDDC Flex resource semantics; those belong to the Integration and its Domain Abstractions. The Backend does not define Terraform serialization; that belongs to the Terraform Target. Its responsibility is the translation between the two published contracts.
+
+This makes Backend the formal domain-to-Target lowering stage. It is intentionally analogous to a compiler backend: it consumes a resolved typed domain representation and produces a Target-specific representation.
 
 ## Resource Graph ownership
 
@@ -230,6 +264,8 @@ Domain Abstractions allow:
 - multiple Backends to reuse one resolved domain model;
 - domain evolution to occur independently from Engine and Target implementations.
 
+The Backend boundary also prevents domain semantics and Target representation from becoming entangled. Domain Abstractions remain Target-independent, while Target Abstractions remain domain-independent.
+
 ## Guardrails
 
 - Engine SHALL NOT reference Integration-specific resource types at compile time.
@@ -239,6 +275,8 @@ Domain Abstractions allow:
 - Semantic Models define resource semantics; Resource Graphs contain resolved resource instances.
 - Source syntax SHALL NOT leak into the canonical Resource Graph merely because an Adapter supplied it.
 - Target concepts SHALL NOT leak into Domain Abstractions.
+- Backends SHALL NOT redefine domain semantics owned by the Integration.
+- Backends SHALL NOT own Target serialization or emission behavior owned by the Target.
 - A contract abstraction SHOULD exist only when it protects an independently owned or independently evolving concern.
 
 ## Consequences
@@ -251,6 +289,7 @@ Domain Abstractions allow:
 - Changes have clearer ownership and smaller expected release blast radii.
 - Domain contracts can evolve using the same explicit compatibility discipline as Engine and Target contracts.
 - The Resource Graph can remain semantically rich without becoming a universal lowest-common-denominator cloud model.
+- The Backend has a precise responsibility: lowering from Domain Abstractions to Target Abstractions.
 
 ### Negative / risks
 
