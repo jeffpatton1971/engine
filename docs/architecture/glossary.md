@@ -26,19 +26,21 @@ Adapters parse and normalize input. They do not apply infrastructure semantics o
 
 ## Semantic Model
 
-The authoritative definition of resource types and their meaning within an infrastructure domain.
+The authoritative definition of an infrastructure domain's concepts, resource types, identities, properties, constraints, defaults, relationships, and semantic rules used to interpret and validate infrastructure Intent.
 
-A Semantic Model may define resource types, properties, types, constraints, defaults, identities, and valid relationships.
+A Semantic Model gives parsed Intent domain meaning. It defines more than resource shape: it describes how resources are identified, what their properties mean, which relationships are valid, which defaults and constraints apply, and what makes an expression of Intent semantically valid within that domain.
+
+A Semantic Model is independent of deployment targets. It does not define how infrastructure is represented in Terraform, Bicep, CloudFormation, or another target language. That mapping belongs to a Backend.
 
 Examples may include VCFA, Azure, AWS, or another infrastructure domain.
 
 ## Semantic Analysis
 
-The Engine phase that resolves and validates parsed Intent against one or more Semantic Models.
+The Engine phase that interprets parsed Intent using one or more Semantic Models.
 
 Semantic Analysis may include type resolution, identity resolution, defaulting, validation, reference resolution, relationship resolution, dependency analysis, and diagnostic production.
 
-Semantic Analysis produces a resolved Infrastructure IR.
+Semantic Analysis combines a declaration of desired infrastructure with the domain knowledge necessary to determine what that declaration means. Successful Semantic Analysis produces resolved Infrastructure IR.
 
 ## Resource
 
@@ -64,7 +66,7 @@ The IR is the canonical semantic boundary between the Engine's analysis phases a
 
 A component that lowers Infrastructure IR into a target-specific intermediate representation.
 
-A Backend understands how infrastructure semantics map to a target deployment model.
+A Backend understands how resolved infrastructure semantics map to a target deployment model. Target-specific choices, references, addresses, expressions, and representation rules belong here rather than in the Semantic Model.
 
 Examples may include Terraform, Bicep, CloudFormation, or other deployment targets.
 
