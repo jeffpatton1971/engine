@@ -125,9 +125,9 @@ A **dependency** expresses ordering or prerequisite behavior.
 Examples:
 
 ```text
-VirtualDisk  --> VirtualMachine
-Network      --> VirtualMachine
-ResourceGroup --> VirtualMachine
+VirtualDisk    --> VirtualMachine
+Network        --> VirtualMachine
+ResourceGroup  --> VirtualMachine
 ```
 
 These edges mean the prerequisite resource must be available before the dependent resource can be correctly lowered, emitted, or ultimately provisioned according to the domain semantics being represented.
@@ -174,6 +174,41 @@ Therefore:
 - Dependencies may exist independently when the domain has a real prerequisite without a meaningful semantic relationship.
 - Engine owns the resolved graph edges and deterministic dependency analysis once those semantics have been supplied.
 
+## Dependency provenance and diagnostics
+
+`ResourceDependency` SHALL remain a structural graph fact rather than carrying human-readable explanation directly.
+
+Its preferred minimum semantics are:
+
+```csharp
+public readonly record struct ResourceDependency(
+    ResourceIdentity Prerequisite,
+    ResourceIdentity Dependent);
+```
+
+The Integration / Semantic Model owns **why** the dependency exists because that explanation originates in domain rules rather than graph mechanics.
+
+Engine MAY carry provenance alongside resolved edges for diagnostics and explainability, but provenance is a separate concern from dependency identity.
+
+Conceptually:
+
+```text
+Semantic rule
+    |
+    +--> ResourceDependency(A, B)
+    |
+    +--> provenance
+          rule identity
+          optional explanatory message
+          source/context as appropriate
+```
+
+This permits two semantic rules to derive the same graph dependency without creating two distinct dependency edges. Engine can deduplicate the structural edge while retaining multiple provenance records when useful.
+
+Human-readable explanations, rule identifiers, and diagnostic context SHALL NOT affect dependency equality, graph ordering, cycle detection, or other structural behavior.
+
+The exact provenance contract remains open and should be designed with the diagnostics / Artifact Bundle work rather than embedded prematurely into the graph edge contract.
+
 ## Avoid synthetic containers and artificial semantics
 
 The Resource Graph SHALL model resources and relationships that are meaningful in the infrastructure domain. It SHOULD NOT introduce synthetic container resources merely to provide grouping, traversal, or deployment ordering when those concerns can be represented directly through graph metadata or dependency edges.
@@ -199,7 +234,8 @@ Engine owns:
 - deterministic traversal;
 - missing-reference diagnostics;
 - cycle detection;
-- deterministic topological ordering.
+- deterministic topological ordering;
+- carrying graph provenance when needed for diagnostics/explainability.
 
 Integrations own:
 
@@ -208,7 +244,8 @@ Integrations own:
 - typed resource reference properties;
 - semantic relationship definitions;
 - rules determining whether a relationship implies dependency behavior;
-- domain-specific prerequisite rules that create dependency-only edges where justified.
+- domain-specific prerequisite rules that create dependency-only edges where justified;
+- domain-facing explanations for why relationships and dependencies exist.
 
 Backends consume the resolved graph. They SHALL NOT recreate identity resolution or reinterpret raw Intent merely to discover relationships or dependencies that Semantic Analysis should already have resolved.
 
@@ -257,6 +294,8 @@ The exact edge APIs are not yet accepted, but the architectural direction is to 
 - Integrations SHALL NOT invent semantic relationships solely to encode ordering.
 - Synthetic container resources SHOULD NOT be introduced solely for grouping, traversal, or dependency ordering.
 - Platform-native containers remain valid resources when they are genuine domain concepts.
+- `ResourceDependency` SHALL remain structural and SHALL NOT contain diagnostic prose or rule semantics.
+- Integration / Semantic Model logic owns the reason a dependency exists; Engine may carry that provenance separately.
 - Backends SHALL consume resolved graph semantics rather than re-resolving source-level references.
 
 ## Consequences
@@ -269,6 +308,8 @@ The exact edge APIs are not yet accepted, but the architectural direction is to 
 - Engine can resolve and diagnose references deterministically.
 - Semantic relationships remain expressive without forcing every relationship into an ordering constraint.
 - Dependency-only edges can represent genuine platform prerequisites without polluting domain semantics.
+- Structural graph equality remains independent from human-readable diagnostic text.
+- Multiple semantic reasons can explain one deduplicated dependency edge.
 - Synthetic container abstractions are discouraged unless they represent real infrastructure concepts.
 - Proven BAT vNext topological-sort and cycle-detection behavior can be carried forward into the richer graph model.
 
@@ -278,14 +319,16 @@ The exact edge APIs are not yet accepted, but the architectural direction is to 
 - Poor ResourceKey design can create collisions or unstable identity even when Engine behaves correctly.
 - Relationship-to-dependency derivation needs a precise Semantic Model contract.
 - Dependency-only edges require disciplined use so they do not become an escape hatch for poorly modeled semantics.
+- Separate provenance requires an additional diagnostics/explainability contract later.
 - Typed references and multiple Domain Abstractions generations increase assembly/type-identity considerations for the plugin loader.
 
 ## Open questions
 
 - What is the exact `IResourceGraph` lookup and traversal API?
-- What are the concrete shapes of `ResourceRelationship` and `ResourceDependency`?
+- What is the concrete shape of `ResourceRelationship`?
 - How does the Semantic Model declare relationship kinds and dependency behavior?
 - What criteria distinguish a justified dependency-only edge from a missing semantic relationship?
 - Should graph identity comparison be strictly ordinal and case-sensitive by Engine contract, or can an Integration define canonicalization before identity creation?
 - What diagnostics are required for duplicate identities, unresolved references, wrong-type references, and dependency cycles?
-- How are graph identities and edges serialized into diagnostics, provenance, and Artifact Bundles?
+- What is the separate graph provenance contract for diagnostics and explainability?
+- How are graph identities, edges, and provenance serialized into diagnostics and Artifact Bundles?
