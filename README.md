@@ -4,9 +4,9 @@
 
 This repository is a temporary design space for exploring a ground-up infrastructure intent engine.
 
-The working premise is that Engine compiles declarative infrastructure intent into deterministic deployment artifacts without making Terraform, Bicep, CloudFormation, or another target representation part of the core semantic model.
+Engine compiles declarative infrastructure Intent into deterministic deployment artifacts without making Terraform, Bicep, CloudFormation, or another Target representation part of the core semantic model.
 
-Nothing documented here should be considered final unless explicitly marked as accepted. Early ADRs are intentionally **Proposed** so competing ideas can be recorded and challenged before implementation hardens the architecture.
+Nothing here is final unless explicitly marked accepted. ADRs remain **Proposed** while concrete pressure tests shape the contracts.
 
 ## Current architecture sketch
 
@@ -49,7 +49,9 @@ Parsed Intent --------+
        Artifact Bundle
 ```
 
-Semantic Analysis is intentionally multi-phase. Integrations materialize and locally validate concrete typed domain resources; Engine registers identities, resolves typed references, constructs and validates graph edges, detects cycles, and produces the deterministic Resource Graph. Targets perform target-model validation after Backend lowering.
+Semantic Analysis is multi-phase. Integrations materialize managed/existing typed domain nodes, canonical identities/references, and domain diagnostics. Engine resolves those semantics into a deterministic Resource Graph. Backends determine whether a valid domain graph can be represented by their Target contract generation; Targets validate and emit the resulting Target model.
+
+Compilation-specific context belongs to one Intent/compilation and is never global Engine state.
 
 ## Architecture documents
 
@@ -65,23 +67,28 @@ Semantic Analysis is intentionally multi-phase. Integrations materialize and loc
 - [ADR-008: Domain Abstractions and Typed Resource Graphs](docs/architecture/ADR-008-domain-abstractions-and-typed-resource-graphs.md)
 - [ADR-009: Resource Identity, References, and Graph Edge Semantics](docs/architecture/ADR-009-resource-identity-references-and-graph-edges.md)
 - [ADR-010: Semantic Model and Semantic Analysis Lifecycle](docs/architecture/ADR-010-semantic-model-and-semantic-analysis-lifecycle.md)
+- [Azure pressure-test scenarios](docs/architecture/scenarios/)
 
 ## Current design principles
 
-1. Begin with infrastructure intent, not a deployment language.
-2. Preserve semantic meaning independently of Terraform, Bicep, CloudFormation, or other Targets.
-3. Treat the Resource Graph as the canonical resolved infrastructure representation.
-4. Keep the principal independently loadable extension types to Adapters, Infrastructure Integrations, and Targets unless demonstrated requirements justify more.
-5. Let Integrations own domain semantics, Domain Abstractions, resource materialization, local validation, and domain-to-Target Backends.
-6. Let Engine own semantic-analysis orchestration, identity enforcement, reference resolution, graph construction, graph validation, and deterministic graph behavior.
-7. Let Targets own Target contracts, target-model validation, conformance, and emission.
-8. Allow independently developed Integrations and Targets without modification to Engine Core when existing generic contracts are sufficient.
-9. Produce deterministic, versioned Artifact Bundles.
-10. Adopt cloud-native operating principles without requiring Kubernetes or a distributed architecture.
-11. Keep architecture boundaries distinct from repository/package boundaries until real ownership and lifecycle requirements emerge.
+1. Begin with infrastructure Intent, not a deployment language.
+2. Keep Semantic Models and Domain Abstractions Target-independent.
+3. Treat the deterministic Resource Graph as canonical resolved infrastructure semantics.
+4. Keep principal loadable extension types to Adapters, Integrations, and Targets unless evidence justifies more.
+5. Let Integrations own domain semantics, canonical identity/scoping, managed/existing domain types, local validation, and Backends.
+6. Let Engine own identity enforcement, reference resolution, graph construction/integrity, traversal, and deterministic managed ordering.
+7. Model domain semantic type independently from managed/existing lifecycle.
+8. Make typed references target domain contracts rather than lifecycle-specific implementations.
+9. Preserve semantic information through IR so Backends never need raw/Parsed Intent to recover accepted domain meaning.
+10. Scope Compilation Context to one Intent/compilation; never treat it as global Engine state.
+11. Let Backends own Target representability and Targets own Target-model validation/emission.
+12. Make contract compatibility explicit and conformance-tested.
+13. Produce deterministic versioned Artifact Bundles.
+14. Adopt cloud-native operating principles without requiring Kubernetes or distributed architecture.
+15. Add abstractions only when a concrete independently owned/evolving concern requires them.
 
 ## Working posture
 
-This repository is intentionally a scratch space for architecture discovery. Proposed decisions should be challenged with concrete vertical slices before they are accepted.
+The Azure VM pressure-test series has validated the major semantic-analysis boundaries and exposed concrete requirements around scoped identity, brownfield resources, typed references, mixed-lifecycle dependencies, semantic-lossless IR, per-compilation context, and Target representability.
 
-The immediate validation step is to pressure-test the semantic-analysis lifecycle with a small real infrastructure model containing multiple resource types, forward references, relationships, dependencies, validation failures, and deterministic graph ordering before freezing the public Semantic Model API.
+The next design work should use those findings to shape minimal public contracts rather than adding abstractions without a concrete pressure case.
