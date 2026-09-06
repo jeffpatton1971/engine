@@ -121,17 +121,15 @@ The governing distinction is:
 
 ## Dependency-only edges
 
-A dependency-only edge remains valid in a mixed-lifecycle graph.
+A dependency-only edge remains valid in a mixed-lifecycle graph when the Integration's domain semantics legitimately produce it.
 
-For example, if Azure Integration identifies a platform prerequisite with no useful enduring semantic relationship:
+For example:
 
 ```text
 IExistingResource A -> IManagedResource B
 ```
 
-Engine may retain that structural dependency without inventing a relationship.
-
-Because `A` is existing, the prerequisite is considered available for scheduling purposes. The Backend still receives enough information to represent the existing prerequisite appropriately for its Target.
+may represent an availability prerequisite with no useful enduring semantic relationship.
 
 Likewise:
 
@@ -139,9 +137,11 @@ Likewise:
 IManagedResource A -> IManagedResource B
 ```
 
-participates normally in managed topological ordering.
+may participate normally in managed topological ordering.
 
-## Cycle case 1: managed-only cycle
+Engine does not decide whether an edge is semantically valid merely from lifecycle type. The Integration owns whether a dependency exists and its direction.
+
+## Managed-resource cycles
 
 ```text
 Managed A -> Managed B
@@ -158,59 +158,41 @@ Engine graph validation
     -> compilation fails
 ```
 
-## Cycle case 2: managed/existing cycle
+## Mixed-lifecycle cycles
 
-Consider:
+A mixed-lifecycle cycle should not be invented as a synthetic Engine rule. Each edge must first be justified by Integration semantics.
+
+For example, in the Azure networking scenario:
 
 ```text
 Existing Subnet -> Managed NIC
+```
+
+is meaningful because the NIC requires the subnet.
+
+The reverse edge:
+
+```text
 Managed NIC -> Existing Subnet
 ```
 
-The first edge is reasonable: the NIC requires the existing subnet.
+is not a valid Azure dependency in this scenario because a subnet does not depend on the NIC to exist. Azure Integration should therefore never produce that edge.
 
-The second edge claims that the already-existing subnet requires the new NIC.
+The governing rule is:
 
-This is not merely an ordering inconvenience. It contradicts the lifecycle assertion that the subnet already exists independently of the current compilation.
+> Integration determines whether a dependency exists and its direction. Engine validates and operates on the resulting graph; lifecycle type only affects provisioning behavior.
 
-Expected result:
+If another infrastructure domain legitimately produces a Managed -> Existing dependency, Engine should not reject it merely because of lifecycle direction. Its validity belongs to that Integration's semantic contract.
 
-```text
-Engine graph validation
-    -> invalid lifecycle dependency / cycle diagnostic
-    -> compilation fails
-```
+## Existing-only dependencies
 
-An `IExistingResource` may be a prerequisite of a managed resource, but a managed resource SHOULD NOT be required for the existence of an existing participant in the current compilation.
+Dependency edges among existing participants should not be generated merely to reproduce historical creation order. Existing infrastructure is already present, and relationships can preserve domain meaning without reconstructing how it was originally provisioned.
 
-This suggests a useful invariant:
+If an Integration emits an existing-to-existing dependency because it represents a current availability invariant, Engine may retain it for semantic traversal.
 
-> Existing resources may satisfy prerequisites for managed resources, but managed resources cannot be prerequisites for the asserted pre-existence of existing resources within the same compilation.
+Because neither node is scheduled for creation, such edges do not participate in managed provisioning order unless they affect a path to managed resources in a semantically meaningful way.
 
-The exact diagnostic classification remains open.
-
-## Cycle case 3: existing-only dependency cycle
-
-```text
-Existing A -> Existing B
-Existing B -> Existing A
-```
-
-This case is different.
-
-Because neither node is scheduled for creation, the cycle does not create a provisioning-order problem.
-
-However, dependency edges among existing participants are usually unnecessary if all they are intended to express is historical provisioning order. Existing infrastructure is already present; relationships can preserve domain meaning without reconstructing its creation sequence.
-
-Therefore the preferred rule is:
-
-> Do not derive dependency edges between existing participants merely to reproduce how the existing environment would have been provisioned.
-
-If an Integration nevertheless emits an existing-to-existing dependency because it represents a current availability invariant rather than historical ordering, Engine may retain it for semantic traversal. A cycle among only existing participants should not automatically invalidate managed provisioning unless a semantic rule explicitly declares such a cycle invalid.
-
-This keeps Engine from rejecting a brownfield compilation merely because an imported/existing environment contains dependency information irrelevant to the resources being managed now.
-
-## Cycle detection therefore has two views
+## Cycle detection has two views
 
 The pressure test suggests separating:
 
@@ -227,19 +209,11 @@ Engine can use the semantic graph for traversal, diagnostics, and Backend contex
 
 Engine uses the managed provisioning graph for deterministic topological ordering and ordinary provisioning-cycle detection.
 
-Additional lifecycle validation catches invalid edges such as:
-
-```text
-Managed -> Existing
-```
-
-when that edge claims the managed resource is required for an existing participant to exist.
+A full-graph semantic cycle may still be diagnostically relevant, but Engine should not infer domain invalidity from lifecycle direction alone. Any semantic-cycle rule beyond managed provisioning cycles must be justified by the Integration's domain semantics.
 
 ## Important consequence
 
-A simple cycle detector over every dependency edge in the full mixed graph would be too aggressive.
-
-For greenfield graphs, semantic dependency cycles and provisioning cycles are effectively the same problem because every node is managed.
+For greenfield graphs, semantic dependency cycles and provisioning cycles are often effectively the same problem because every node is managed.
 
 For brownfield/mixed graphs, existing participants create a boundary:
 
@@ -261,17 +235,16 @@ The managed/existing type split survives the pressure test with one important re
 Working rules:
 
 1. Managed and existing nodes both participate in dependency traversal.
-2. Existing -> Managed dependencies are valid and represent already-satisfied availability prerequisites.
+2. Existing -> Managed dependencies are valid when produced by Integration semantics and represent already-satisfied availability prerequisites for provisioning.
 3. Managed -> Managed dependencies drive provisioning order normally.
-4. Managed -> Existing dependencies are suspicious and generally invalid because they contradict asserted pre-existence; they require explicit semantic justification if ever supported.
+4. Managed -> Existing dependencies are neither inherently valid nor inherently invalid; the Integration owns whether such an edge has real domain meaning.
 5. Existing -> Existing dependency edges should not be generated merely to reproduce historical creation order.
 6. Managed provisioning cycle detection operates over the managed-resource projection.
-7. Engine may perform additional semantic/lifecycle validation over the full graph without automatically treating every existing-only cycle as a provisioning failure.
+7. Engine does not reverse, invent, or reject dependency direction based solely on lifecycle type.
 
 ## Open questions
 
-- Should `Managed -> Existing` be forbidden by the Engine contract or merely rejected by Integration semantic conformance unless explicitly allowed?
 - Is a separate API required for semantic dependency traversal versus managed provisioning order, or can one graph expose both views?
-- Should existing-only dependency edges be allowed at all in the initial contract?
+- Should existing-only dependency edges be allowed in the initial contract or simply tolerated when emitted by a conformant Integration?
 - How should provenance explain a dependency that crosses a managed/existing lifecycle boundary?
 - What terminology should distinguish an availability prerequisite from a provisioning-order constraint without creating two competing dependency abstractions?
