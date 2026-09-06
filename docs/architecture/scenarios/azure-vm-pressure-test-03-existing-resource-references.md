@@ -2,13 +2,13 @@
 
 > **Status:** Worked architecture pressure test
 >
-> This document tests whether existing infrastructure should be represented as full Resource Graph nodes or as external references that participate in semantic resolution but are lowered differently by the Backend / Target.
+> This document tests how existing infrastructure participates in semantic analysis and Backend lowering without being treated as infrastructure the current compilation should create.
 
 ## Question
 
-For an incremental build, should an existing Resource Group, Virtual Network, Subnet, NIC, or VM be represented as a normal Resource Graph node, or can the Engine model only the reference and allow the Backend / Target to decide how that existing dependency is represented?
+For an incremental build, how should an existing Resource Group, Virtual Network, Subnet, NIC, VM, or other resource participate in the Resource Graph?
 
-The architecture must support brownfield scenarios from the beginning without forcing Engine to own deployment-technology-specific brownfield mechanics.
+The architecture must support brownfield scenarios from the beginning without forcing Engine to own deployment-technology-specific brownfield mechanics or requiring engineers to fully redescribe existing infrastructure.
 
 ## Scenario
 
@@ -32,7 +32,7 @@ The new NIC attaches to the existing subnet. The new VM attaches to the new NIC.
 
 ## Invariant
 
-Greenfield and brownfield resources participate in the same semantic concerns:
+Both managed Resources and existing ResourceParticipants participate in:
 
 ```text
 identity
@@ -43,27 +43,64 @@ semantic validation
 Backend lowering
 ```
 
-The architectural difference is not whether the resource has semantic meaning. The difference is whether the Backend / Target should treat it as something managed by this compilation or as existing infrastructure that must only be referenced.
+The architectural difference is lifecycle intent: a Resource represents infrastructure described for management by the current compilation, while a ResourceParticipant represents infrastructure that already exists and participates semantically but must not be created by this compilation.
 
-## Variant A: existing infrastructure as full graph nodes
+## Proposed semantic distinction
 
-In this model, Engine receives or materializes Resource Graph nodes for both existing and new resources.
+The pressure test adopts `ResourceParticipant` as the working type for existing infrastructure.
+
+Conceptually:
+
+```csharp
+public interface IResourceParticipant
+{
+    ResourceIdentity Identity { get; }
+    ResourceType Type { get; }
+}
+```
+
+The exact API remains illustrative.
+
+A `ResourceParticipant` intentionally carries the minimum semantic information necessary to participate in the graph. It does not require the complete property set of the corresponding managed Domain Resource unless a specific semantic rule genuinely requires additional information.
+
+The type itself carries the core lifecycle meaning:
+
+> This infrastructure exists and may be referenced, related, validated, and lowered, but it is not something this compilation should create.
+
+Engine therefore does not need a generic `Existing = true` flag on every managed resource merely to distinguish brownfield resources.
+
+## Resource versus ResourceParticipant
 
 Conceptually:
 
 ```text
-ResourceGraph
+Resource
+    full Integration-owned typed desired resource
+    managed by this compilation
 
-Existing ResourceGroup:network-rg
-Existing VirtualNetwork:network-rg/prod-vnet
-Existing Subnet:network-rg/prod-vnet/app
-
-Managed ResourceGroup:compute-rg
-Managed NetworkInterface:compute-rg/web-02-nic
-Managed VirtualMachine:compute-rg/web-02
+ResourceParticipant
+    existing infrastructure participant
+    minimum identity/type/domain context required
+    not created by this compilation
 ```
 
-The resulting semantic relationships remain normal:
+Both participate in graph semantics.
+
+For this scenario:
+
+```text
+ResourceParticipant ResourceGroup:network-rg
+ResourceParticipant VirtualNetwork:network-rg/prod-vnet
+ResourceParticipant Subnet:network-rg/prod-vnet/app
+
+Resource ResourceGroup:compute-rg
+Resource NetworkInterface:compute-rg/web-02-nic
+Resource VirtualMachine:compute-rg/web-02
+```
+
+## Relationships remain unchanged
+
+The semantic relationship should not change merely because one endpoint already exists.
 
 ```text
 VirtualNetwork --contained-in--> network-rg
@@ -73,134 +110,133 @@ VM --attached-to--------------> NIC
 VM --contained-in-------------> compute-rg
 ```
 
-The dependency chain is also normal:
+The NIC's relationship to the subnet remains `attached-to` whether the subnet is a new Resource or an existing ResourceParticipant.
+
+This is important because greenfield versus brownfield is not a different Azure domain model.
+
+## References remain typed
+
+A managed resource may reference a ResourceParticipant through the same domain relationship expected for the corresponding resource type.
+
+Conceptually, a NIC still requires a subnet identity/type. If the resolved target is a `ResourceParticipant` representing an Azure Subnet, Engine knows that:
 
 ```text
-existing network-rg
-    -> existing VNet
-    -> existing Subnet
-    -> new NIC
-    -> new VM
-
-new compute-rg
-    -> new VM
+- the reference exists semantically;
+- the relationship can be resolved;
+- the subnet is not scheduled for creation;
+- the Backend must represent the subnet as existing infrastructure for its Target.
 ```
 
-### Advantages
+The exact generic reference API may need to support both managed Resources and ResourceParticipants of the expected domain type. That API question remains open.
 
-- All referenced infrastructure is represented uniformly in the graph.
-- Relationship traversal is straightforward.
-- Semantic validation can inspect existing-resource properties if they are available.
-- Provenance and visualization can show the complete environment context.
-- Backends receive one coherent graph model.
+## Dependency semantics
 
-### Problems
+The dependency chain can include ResourceParticipants normally:
 
-- Engine now needs some way to distinguish resources that participate in semantics from resources that are managed by this compilation.
-- Existing infrastructure may need to be fully described or discovered merely to create a valid graph node.
-- The model risks making brownfield ergonomics depend on how much existing state the engineer can manually reproduce in Intent.
-- If existing nodes are incomplete projections of real resources, it becomes unclear whether they are authoritative semantic resources or merely reference stubs.
+```text
+ResourceParticipant network-rg
+    -> ResourceParticipant prod-vnet
+    -> ResourceParticipant app subnet
+    -> Resource web-02-nic
+    -> Resource web-02
 
-## Variant B: existing infrastructure as external references
+Resource compute-rg
+    -> Resource web-02
+```
 
-In this model, only resources managed by the compilation become full graph nodes.
+The graph semantics remain meaningful:
 
-Existing infrastructure is represented through resolved external references with stable domain identity and whatever domain context is needed for semantic analysis / lowering.
+```text
+existing Subnet -> new NIC
+```
+
+means:
+
+> The NIC requires this subnet to exist.
+
+Because the prerequisite is a `ResourceParticipant`, Engine does not interpret the edge as an instruction to create or schedule that subnet. It is an already-existing prerequisite.
+
+For managed-to-managed dependencies such as:
+
+```text
+new NIC -> new VM
+```
+
+Engine uses the dependency for provisioning/topological ordering normally.
+
+This allows one dependency model to represent both availability prerequisites and managed-resource ordering without introducing synthetic relationships or separate brownfield dependency types.
+
+## Topological behavior
+
+For managed output ordering, ResourceParticipants are treated as already-satisfied prerequisites.
 
 Conceptually:
 
 ```text
-ResourceGraph nodes
-    ResourceGroup:compute-rg
-    NetworkInterface:web-02-nic
-    VirtualMachine:web-02
+Existing participants:
+    network-rg
+    prod-vnet
+    app subnet
 
-External references
-    azure.resource-group.network-rg
-    azure.virtual-network.network-rg/prod-vnet
-    azure.subnet.network-rg/prod-vnet/app
+Managed ordering:
+    compute-rg
+    web-02-nic
+    web-02
 ```
 
-The NIC can still declare:
+The NIC cannot be semantically valid unless its subnet participant resolves, but the subnet itself is not emitted into the managed provisioning order.
+
+The exact Resource Graph API may still expose ResourceParticipants in general traversal so diagnostics, visualization, relationship queries, and Backend lowering can see the complete semantic context.
+
+## Semantic validation
+
+`ResourceParticipant` should carry only the minimum information required to support the semantic rules that apply to it.
+
+For many references that may be only:
 
 ```text
-NIC:web-02-nic
-    --attached-to--> existing Subnet:network-rg/prod-vnet/app
+ResourceIdentity
+ResourceType
 ```
 
-and the Backend can lower that external dependency appropriately for the Target.
+For example, if an Azure NIC only needs the identity of an existing subnet for Backend lowering, the engineer should not need to provide the subnet's entire address space, delegation configuration, route table, and other properties.
 
-### Advantages
+If a semantic rule genuinely requires additional existing-resource information, the Integration may require that specific information or obtain it through a future enrichment mechanism.
 
-- Existing infrastructure does not need to masquerade as resources owned by the compilation.
-- Engine does not need to emit or lifecycle-manage existing infrastructure.
-- The Backend / Target remains responsible for target-native existing-resource mechanics.
-- Intent can potentially reference an existing resource using much less detail than would be required to reconstruct the full resource.
+The architecture SHALL NOT require a complete managed-resource description merely because the referenced infrastructure already exists.
 
-### Problems
+## Target-specific lowering remains downstream
 
-- The Resource Graph now contains edges whose targets are not normal graph nodes unless external references are treated as first-class graph participants.
-- Semantic validation may need properties from the existing resource that are not present in the reference.
-- Traversal, diagnostics, visualization, and provenance become more complex if graph nodes and external reference endpoints behave differently.
-- Transitive dependency ordering through existing infrastructure may become misleading: an existing VNet and Subnet do not need to be "ordered" for creation, but a new NIC still depends on their existence.
+Engine should not encode Terraform data blocks, Bicep `existing` declarations, ARM resource-ID calculations, CloudFormation import/reference mechanics, or other deployment-technology-specific existing-resource constructs.
 
-## Key architectural distinction
-
-The pressure test suggests that the important concept is not strictly:
+The flow remains:
 
 ```text
-Resource node versus non-resource reference
+Intent
+    |
+    v
+Integration semantic analysis
+    |
+    v
+Resource Graph
+    Resources + ResourceParticipants
+    |
+    v
+Backend
+    sees participant type and domain identity
+    chooses Target-level representation
+    |
+    v
+Target
 ```
 
-but rather:
+For example, when a Backend receives an Azure Subnet `ResourceParticipant`, it knows that the subnet is semantically required but is not a managed output resource. The Backend / Target pair determines how that fact becomes Terraform, Bicep, ARM, CloudFormation, or another Target representation.
 
-```text
-semantic participation versus lifecycle ownership
-```
+## Does Engine need a greenfield/brownfield mode?
 
-An existing subnet has real semantic identity and participates in:
+Not for core graph semantics.
 
-```text
-reference resolution
-relationship semantics
-validation
-Backend lowering
-```
-
-but it is not necessarily a deployment unit owned by this compilation.
-
-This leads to a candidate model in which Engine can represent a semantic resource participant without deciding how that participant is managed by a deployment Target.
-
-## Candidate direction: graph participant + disposition/context
-
-A possible future shape is conceptually:
-
-```text
-ResourceParticipant
-    Identity
-    ResourceType
-    semantic state
-    disposition/context
-```
-
-where disposition might eventually express something like:
-
-```text
-managed by this compilation
-existing / externally managed
-```
-
-The exact API and vocabulary are deliberately not decided here.
-
-The important requirement is:
-
-> Existing infrastructure may participate fully in semantic resolution without being treated as deployment output owned by the current compilation.
-
-## Does Engine need to know greenfield versus brownfield?
-
-Not necessarily as a compilation-wide mode.
-
-A mixed scenario is common:
+A compilation may be mixed:
 
 ```text
 existing Resource Group
@@ -210,85 +246,17 @@ new NIC
 new VM
 ```
 
-Therefore a global binary value such as:
+Therefore a global binary mode is not sufficient to determine lifecycle behavior.
 
-```text
-mode = greenfield | brownfield
-```
-
-is insufficient as the semantic model.
-
-Compilation context may still contain an informational workflow mode such as `incremental`, but graph semantics should not depend on a global greenfield/brownfield switch.
-
-Instead, the semantic state of each participating resource/reference should carry enough information for Backend lowering to determine whether it represents new managed infrastructure or an existing dependency.
-
-## Target-specific lowering remains downstream
-
-Engine should not encode Terraform data blocks, Bicep `existing` declarations, ARM calculated resource IDs, CloudFormation import/reference mechanics, or other deployment-technology-specific existing-resource constructs.
-
-The flow remains:
-
-```text
-Intent / context
-    |
-    v
-Integration semantic analysis
-    |
-    v
-Resource Graph
-    existing + managed semantic participants
-    |
-    v
-Backend
-    chooses Target-level representation
-    |
-    v
-Target
-```
-
-The same semantic relationship:
-
-```text
-NIC --attached-to--> Subnet
-```
-
-should remain valid regardless of whether the subnet is newly managed or pre-existing.
-
-## Dependency semantics for existing resources
-
-An existing resource does not need to be emitted before a managed resource, but the managed resource still requires the existing resource to be available.
-
-Therefore "dependency" may need to distinguish at least conceptually between:
-
-```text
-provisioning order among managed resources
-
-and
-
-availability prerequisite involving an existing resource
-```
-
-This does not necessarily require two public edge types. It may be derivable from the participant disposition during graph analysis / Backend lowering.
-
-For example:
-
-```text
-existing Subnet -> new NIC
-```
-
-means:
-
-> The NIC requires the subnet to exist, but Engine must not schedule creation of the subnet because it is externally managed.
-
-A topological ordering over managed resources can treat existing participants as already satisfied prerequisites while preserving the relationship for validation and lowering.
+Compilation context may still carry workflow information such as `incremental`, but the Resource versus ResourceParticipant type distinction is sufficient for the graph to know which infrastructure is existing and which is managed by the compilation.
 
 ## Brownfield authoring pain point
 
-Supporting existing-resource semantics does not by itself solve engineer effort.
+Supporting `ResourceParticipant` does not by itself solve engineer effort, but it prevents the architecture from requiring unnecessary detail.
 
-A poor brownfield experience would require the engineer to fully redescribe every existing resource just so a new resource can reference it.
+A brownfield Intent should be able to identify existing infrastructure with the minimum information required for identity, semantic validation, and Backend lowering.
 
-A future system may obtain existing-resource information from:
+A future system may obtain additional existing-resource information from:
 
 ```text
 explicit Intent
@@ -303,28 +271,33 @@ custom engineer tooling
 
 Those acquisition/enrichment mechanisms should not be required to define the core Semantic Model contract now.
 
-The architectural requirement is only that the Resource Graph and Backend boundaries do not prevent such enrichment later.
-
 ## Result
 
-Variant A is too strong if it requires every existing dependency to be reconstructed as a complete managed-style graph node.
+The pressure test adopts the following working direction:
 
-Variant B is too weak if external references cannot participate normally in relationships, semantic validation, diagnostics, and Backend lowering.
+> `ResourceParticipant` is a first-class semantic graph type representing infrastructure that already exists.
 
-The preferred direction is therefore:
+A ResourceParticipant:
 
-> Treat existing infrastructure as first-class semantic graph participants, while keeping lifecycle/disposition separate from resource identity and domain semantics.
+- has stable `ResourceIdentity` and `ResourceType`;
+- carries only the minimum additional semantic information required;
+- participates in typed references;
+- participates in semantic relationships;
+- participates in dependency resolution;
+- participates in semantic validation;
+- is visible to Backend lowering;
+- is not created or managed by the current compilation by nature of its type.
 
-Greenfield and brownfield should use the same identity, reference, relationship, semantic-validation, and Backend-lowering model.
+Managed Resources and ResourceParticipants use the same semantic relationship model. The Target-specific representation of a ResourceParticipant remains a Backend / Target concern.
 
-The Target-specific representation of an existing dependency remains a Backend / Target concern.
+This allows greenfield and brownfield infrastructure to coexist in one Resource Graph without a global greenfield/brownfield switch and without forcing engineers to redescribe complete existing environments.
 
 ## Open questions exposed by this test
 
-- What is the minimum semantic information required for an existing graph participant?
-- Does lifecycle/disposition belong on the resource participant, the compilation context, the reference, or separate graph metadata?
-- Can a participant be identity-only, or must Domain Abstractions define a typed existing-resource representation?
-- How does Engine validate semantic constraints that require properties from an existing resource when those properties were not supplied?
-- Should existing participants be included in general graph traversal but excluded from managed-resource topological output ordering?
-- How does Backend lowering distinguish "emit/create" from "reference existing" without contaminating Domain Abstractions with Target concepts?
-- How should external state acquisition/enrichment plug in later without making semantic compilation dependent on live cloud connectivity?
+- What common base contract, if any, should `IResource` and `IResourceParticipant` share?
+- How should `ResourceReference<TResource>` express that its target may resolve to either a managed resource or a ResourceParticipant representing the same domain resource type?
+- How is the domain resource type of a ResourceParticipant associated with Domain Abstractions without requiring a full managed-resource instance?
+- What is the exact minimum participant contract beyond `Identity` and `Type`?
+- How does Engine expose ResourceParticipants in traversal and queries while excluding them from managed-resource provisioning order?
+- How does an Integration request additional semantic information when identity/type alone is insufficient to validate an existing participant?
+- How should external state acquisition/enrichment plug in later without making normal semantic compilation dependent on live cloud connectivity?
