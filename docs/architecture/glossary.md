@@ -4,210 +4,227 @@
 
 This glossary defines the current canonical terminology for the Engine architecture exploration.
 
-The terms below are intentionally provisional. They exist to make architecture discussions precise while the design is still being challenged and refined.
-
 ## Intent
 
 A declarative description of desired infrastructure state or capability, independent of a specific deployment representation.
 
-Intent describes what infrastructure should exist, not how a particular Target expresses it.
-
 ## Source
 
-An external representation containing infrastructure Intent.
-
-Examples include YAML, JSON, API payloads, spreadsheets, or another system's data model.
+An external representation containing infrastructure Intent, such as YAML, JSON, API payloads, spreadsheets, or another system's data model.
 
 ## Adapter
 
-A component that converts a supported Source representation into Engine's Parsed Intent representation.
-
-Adapters parse and normalize input. They do not apply infrastructure-domain semantics, construct the canonical Resource Graph, or generate deployment artifacts.
+A component that converts a Source representation into Parsed Intent. Adapters parse and normalize input; they do not apply infrastructure-domain semantics, construct the canonical Resource Graph, or generate deployment artifacts.
 
 ## Infrastructure Integration
 
 The independently owned extension boundary for one infrastructure domain.
 
-An Integration owns its Semantic Model, Domain Abstractions, resource materialization and domain-local validation behavior, domain identity and relationship semantics, and the Backends that map its domain into explicitly supported Targets.
-
-The initial extension model is an in-process .NET plugin implementing published Engine contracts.
+An Integration owns its Semantic Model, Domain Abstractions, materialization/domain validation, canonical identity/scoping rules, relationship/dependency semantics, and Backends.
 
 ## Domain Abstractions
 
-The stable, separately consumable strongly typed resource and domain contracts shared between an Integration and its Backends.
+Stable, separately consumable strongly typed semantic contracts shared between an Integration and its Backends.
 
-Domain Abstractions compose or implement common Engine resource contracts, but Engine does not take compile-time dependencies on Integration-specific Domain Abstractions.
-
-A Backend references its Integration's Domain Abstractions so it can consume the concrete typed resources retained in the Resource Graph.
+They define domain contracts such as `ISubnet` or `IVirtualMachine`, managed/existing implementations, typed values, and other public domain state. Engine does not compile against Integration-specific Domain Abstractions.
 
 ## Semantic Model
 
-The versioned semantic contract an Infrastructure Integration exposes to Engine to give Parsed Intent infrastructure-domain meaning.
+The versioned semantic contract an Integration exposes to Engine to give Parsed Intent domain meaning.
 
-A Semantic Model owns domain concepts, resource types, canonical identity rules, properties, constraints, defaults, relationship semantics, prerequisite semantics, and domain validation rules. It is broader than a collection of resource schemas.
+It owns resource concepts, identity/scoping rules, properties, constraints, defaults, relationships, prerequisite semantics, and domain validation. It remains independent of deployment Targets.
 
-Engine defines the semantic operations and lifecycle an Integration must provide, not the Integration's internal modeling technique. An Integration may implement its model using hand-written code, generated definitions, upstream schemas, reflection, metadata, internal libraries, or other suitable mechanisms.
-
-A Semantic Model remains independent of deployment Targets. It may define that a virtual machine uses a network and that this relationship creates a prerequisite, but it does not define the Terraform address, Bicep expression, CloudFormation reference, or other Target representation.
+Engine defines required semantic operations and lifecycle, not a universal infrastructure meta-schema.
 
 ## Semantic Analysis
 
-The multi-phase process that combines Parsed Intent with Integration-owned semantics to produce the deterministic Resource Graph.
+The multi-phase process that combines Parsed Intent with Integration semantics to produce deterministic Infrastructure IR.
 
 Current lifecycle:
 
-1. **Materialization - Integration:** recognize resource types, construct concrete typed resources, canonical identities and typed references, and perform resource-local/domain-local validation.
-2. **Identity Registration - Engine:** collect resources and enforce `ResourceIdentity` uniqueness.
-3. **Reference Resolution - Engine:** resolve typed references and validate target existence/type.
-4. **Semantic Analysis - Integration:** interpret resolved resources/references and declare relationship and prerequisite semantics.
-5. **Graph Construction and Validation - Engine:** construct/deduplicate edges, validate graph integrity, detect cycles, and establish deterministic ordering.
+1. **Materialization - Integration:** create managed/existing typed domain nodes, canonical identities/references, and domain-local diagnostics.
+2. **Identity Registration - Engine:** collect nodes and enforce identity uniqueness.
+3. **Reference Resolution - Engine:** resolve canonical typed references.
+4. **Semantic Analysis - Integration:** derive relationships, prerequisites, and provenance.
+5. **Graph Construction/Validation - Engine:** construct/deduplicate edges, validate integrity, detect managed provisioning cycles, and establish deterministic managed ordering.
 
 Source declaration order has no semantic significance.
 
-## Resource
+## Resource Node
 
-A concrete Integration-owned strongly typed unit of infrastructure meaning that participates in the Resource Graph through a deliberately small common Engine resource contract.
+Working common Engine-level graph participant contract containing at least canonical `ResourceIdentity` and `ResourceType`.
 
-A Resource is independent of a deployment Target and retains the domain state required by conformant Backends.
+The exact public API and final name remain open. Domain semantic type and lifecycle are modeled orthogonally to this common graph participation contract.
+
+## Managed Resource
+
+A domain node implementing the managed lifecycle contract (`IManagedResource` in the current illustrative model).
+
+It represents infrastructure the current compilation intends to manage and may therefore participate in managed provisioning order and Target-managed output.
+
+## Existing Resource
+
+A domain node implementing the existing lifecycle contract (`IExistingResource` in the current illustrative model).
+
+It represents infrastructure asserted to already exist. It participates in identity, references, relationships, semantic dependencies, validation, and Backend lowering but is not scheduled for creation by the current compilation.
+
+Existing implementations should contain only the minimum semantic information required by supported operations.
+
+## Resource Participant
+
+An architectural description for any managed or existing domain node participating in the Resource Graph.
+
+It is not currently required to be a distinct public CLR type; `IResourceNode` plus managed/existing lifecycle contracts may provide the actual API surface.
 
 ## ResourceIdentity
 
-The authoritative graph identity of a Resource.
-
-Conceptually:
+The authoritative graph identity:
 
 ```text
 IntegrationId + ResourceType + ResourceKey
 ```
 
-The Integration owns construction and canonicalization of `ResourceKey` according to its domain's identity/scoping semantics. Engine enforces uniqueness of the complete identity and does not manufacture cloud-specific keys.
+Integration owns ResourceKey canonicalization and domain scope interpretation. Engine enforces uniqueness. Lifecycle and Adapter/Target identity do not participate.
 
 ## ResourceKey
 
-The Integration-owned canonical key portion of a `ResourceIdentity`.
+The Integration-owned canonical key portion of ResourceIdentity. It may encode whatever domain scope is necessary for uniqueness.
 
-A ResourceKey may encode whatever domain scope is required for uniqueness. Its syntax and canonicalization rules belong to the Integration rather than Engine.
+## ResourceReference<TDomain>
 
-## ResourceReference<TResource>
+A strongly typed identity-based reference to a domain semantic contract, such as `ResourceReference<ISubnet>`.
 
-A strongly typed, identity-based reference from one domain resource to another expected resource type.
-
-A resource reference does not hold a live CLR object pointer, does not by itself define relationship meaning, and does not automatically imply a dependency. The Integration creates the typed reference; Engine resolves it against the complete resource set.
+The reference is independent of managed/existing lifecycle and does not contain a live object pointer, define relationship meaning, or automatically imply dependency. Integration creates it; Engine resolves it.
 
 ## Relationship
 
-A resolved graph edge expressing infrastructure-domain meaning between resources, such as `uses-network`, `uses-disk`, or `contained-in`.
+A resolved graph edge expressing domain meaning, such as `attached-to`, `uses-disk`, or `contained-in`.
 
-The Integration / Semantic Model owns relationship semantics. Engine owns construction and storage of the resolved relationship edge in the Resource Graph.
-
-A relationship may imply a dependency, but the concepts are not synonymous.
+Integration owns relationship semantics; Engine owns resolved graph representation.
 
 ## Dependency
 
-A resolved structural graph edge expressing a prerequisite or ordering constraint between resources.
+A resolved structural prerequisite edge.
 
-A dependency may be derived from a semantic relationship or may exist independently when the platform imposes a genuine prerequisite without a useful enduring relationship. Integrations must not invent semantic relationships solely to encode ordering.
+A dependency may derive from a relationship or exist independently when the domain has a genuine prerequisite. Integration owns whether the dependency exists and its direction. Engine does not infer dependency direction from managed/existing lifecycle.
 
-The dependency edge remains structural. Domain explanations or rule identities belong to separate provenance rather than dependency identity.
+Dependency reason/provenance remains separate from structural edge identity.
+
+## Semantic Dependency Graph
+
+The dependency view containing prerequisite facts across managed and existing nodes. It is useful for traversal, diagnostics, explainability, and Backend context.
+
+## Managed Provisioning Projection
+
+The provisioning-order view derived from the semantic dependency graph in which managed resources are scheduled and existing prerequisites are treated as already satisfied.
+
+Managed-to-managed cycles are provisioning failures. Existing nodes remain semantically visible without becoming scheduled creation units.
 
 ## Resource Graph
 
-Engine's deterministic graph of concrete Integration-owned typed Resources plus Engine-owned resolved relationships and dependency edges.
+Engine's deterministic graph of Integration-owned typed managed/existing nodes plus Engine-owned resolved relationship and dependency edges.
 
-Engine owns identity enforcement, reference resolution, graph construction, traversal, cycle detection, graph integrity validation, and deterministic ordering. Integrations own the semantic meaning that causes relationships and dependencies to be derived.
-
-The graph is lossless for supported Backend needs: a Backend must not return to raw or Parsed Intent merely to recover accepted information that should have survived Semantic Analysis.
+Engine owns identity enforcement, reference resolution, graph construction, traversal, graph integrity, managed provisioning cycle detection, and deterministic ordering. Integrations own the semantics that produce graph facts.
 
 ## Infrastructure IR
 
-Engine's canonical intermediate representation of resolved infrastructure Intent.
+Engine's canonical Target-independent representation of resolved infrastructure Intent: the Resource Graph plus defined compilation-scoped semantic context required by downstream stages.
 
-Infrastructure IR is the deterministic Resource Graph. It is independent of deployment Targets and is the semantic boundary between Engine analysis and Integration-owned Target lowering.
+Infrastructure IR is **semantically lossless** for supported Backend needs. It need not preserve source formatting, ordering, comments, aliases, or other representation-only details.
+
+## Compilation Context
+
+Defined state belonging to one Intent/compilation rather than one resource.
+
+It may include values such as account/subscription selection, location defaults, credential/profile selection, naming context, workflow metadata, or Target selection.
+
+Compilation Context is per compilation, never global Engine state, and must not expose raw Parsed Intent as a downstream escape hatch.
 
 ## Backend
 
-An Integration-owned component that lowers that Integration's resolved typed Resource Graph into one specific published Target contract.
-
-A Backend bridges two strongly typed contracts:
+An Integration-owned component that lowers resolved domain semantics into one specific Target contract.
 
 ```text
 Domain Abstractions -> Backend -> Target Abstractions
 ```
 
-A Backend does not redefine domain semantics, reinterpret raw Intent, or own Target serialization.
+Backend also owns **Target representability**: determining whether a valid domain graph can be expressed by the Target contract generation it supports.
 
-Examples include an Azure-to-Bicep Backend, an SDDC Flex-to-Terraform Backend, or a GCP-to-Terraform Backend.
+A Backend does not reinterpret raw Intent or own Target serialization.
+
+## Target Representability
+
+The Backend-owned question:
+
+> Can this valid domain graph be represented by this Target contract generation?
+
+Unsupported but valid domain features produce Backend capability/representability diagnostics rather than Integration or Engine graph errors.
 
 ## Target
 
-A distinct deployment technology represented through a stable published Target contract.
+A distinct deployment technology represented through stable published Target contracts. Examples include Terraform, OpenTofu, Bicep, ARM, CloudFormation, and potentially Ansible.
 
-Examples include Terraform, OpenTofu, Bicep, ARM, CloudFormation, and potentially Ansible. Similar syntax or ancestry does not make two technologies the same Target; Terraform and OpenTofu are separate Targets.
-
-A Target owns its Target Abstractions, target model, target-specific validation, emission, supported contract generations, and Backend conformance suites.
+A Target owns Target Abstractions, Target-model validation, emission, supported contract generations, and Backend conformance suites.
 
 ## Target Abstractions / Target Contract
 
-The stable, separately consumable public model and compatibility contract that a Backend produces for a specific Target.
-
-A Backend depends on the Target Abstractions generation it supports and does not reference the concrete Target implementation.
+The stable public model and compatibility contract produced by a Backend for a specific Target generation.
 
 ## Target Model / Target IR
 
 The Target-shaped representation produced by a Backend and consumed by a Target.
 
-A Target may use a rich IR when appropriate, but Engine does not require every deployment technology to have the same internal IR-plus-Emitter architecture.
+## Target Validation
+
+The Target-owned question:
+
+> Is the produced Target model valid for this deployment technology?
+
+This is distinct from Backend representability validation.
 
 ## Emitter
 
-A Target-owned responsibility that serializes a Target model into physical deployment artifacts.
-
-An Emitter does not make infrastructure-domain semantic decisions. It is not required to be an independently loadable Engine plugin.
+A Target-owned responsibility that serializes a valid Target model into physical deployment artifacts. It need not be an independently loadable plugin.
 
 ## Contract Generation
 
-An independently addressable generation of a published Engine, Domain, or Target contract.
-
-A published generation is immutable in its required public shape and semantics. Non-breaking package revisions may occur within a generation; breaking required changes require a new generation. Consumers choose when to migrate while the supplying implementation continues to support and conform to the older generation.
+An independently addressable generation of a published Engine, Domain, or Target contract. Required public shape and semantics are immutable within a generation; breaking changes require a new generation.
 
 ## Conformance Suite
 
-A versioned executable test suite used to demonstrate that an implementation or consumer satisfies a published contract generation.
+A versioned executable test suite demonstrating compatibility with a contract generation.
 
-Every published Target provides a Backend conformance suite. Compatibility is demonstrated through conformance evidence rather than inferred from implementation version numbers.
+Backend conformance should be executable without Adapter or Parsed Intent dependencies so the semantic IR boundary is testable.
 
 ## Artifact
 
 A deterministic physical output produced by Target emission.
 
-Examples include source files, configuration files, manifests, or other Target-native deployment artifacts.
-
 ## Artifact Bundle
 
-The complete, versioned result of a compilation.
-
-An Artifact Bundle may include generated artifacts, manifest metadata, diagnostics, source and Target version information, contract-generation information, and optional graph or provenance information.
+The complete versioned result of a compilation, potentially including artifacts, diagnostics, versions/contract generations, source digest, and provenance/graph information.
 
 ## Compilation
 
-The deterministic process of transforming infrastructure Intent into an Artifact Bundle.
+The deterministic transformation of one Intent plus its per-compilation context into an Artifact Bundle.
 
-Compilation includes adaptation, Integration materialization and semantic analysis, Engine graph construction and validation, Backend lowering, Target validation, and Target emission.
+Validation ownership is layered:
+
+```text
+Integration -> domain correctness
+Engine      -> graph correctness
+Backend     -> Target representability
+Target      -> Target-model correctness
+```
 
 ## Engine
 
-The runtime/compiler that coordinates Adapters, Integrations, Semantic Analysis, Resource Graph construction, Backends, Targets, diagnostics, and Artifact Bundle production.
-
-Engine owns common orchestration and graph mechanics while remaining independent of infrastructure-domain and Target-specific semantics.
+The runtime/compiler coordinating Adapters, Integrations, Semantic Analysis, Resource Graph construction, Backends, Targets, diagnostics, and Artifact Bundle production while remaining independent of domain and Target-specific semantics.
 
 ## Cloud-Native
 
-An operating and design posture rather than a requirement to use Kubernetes or microservices.
-
-For this project, cloud-native principles include stateless execution, declarative contracts, immutable and versioned artifacts, portable runtime packaging, structured diagnostics, observability, API and CLI parity, and independently distributable extensions where useful.
+An operating/design posture favoring stateless execution, declarative contracts, immutable/versioned artifacts, portable runtime packaging, structured diagnostics, observability, API/CLI parity, and independently distributable extensions where useful.
 
 ## Provider
 
-An intentionally avoided Engine architecture term because it is overloaded across cloud providers, Terraform providers, and service providers.
-
-Use Infrastructure Integration when referring to an infrastructure-domain extension, Semantic Model when referring to that Integration's domain semantics, Backend when referring to domain-to-Target lowering, and the specific external technology name when referring to an external provider.
+An intentionally avoided Engine architecture term because it is overloaded across cloud providers, Terraform providers, and service providers. Use Infrastructure Integration, Semantic Model, Backend, Target, or the specific external technology name as appropriate.
