@@ -6,74 +6,143 @@
 
 ## Context
 
-Engine must construct a deterministic Infrastructure IR from Parsed Intent and an Integration-owned Semantic Model. Integration Backends must then consume that IR with enough domain information and type safety to map infrastructure semantics into a Target contract.
+Engine must construct a deterministic Infrastructure IR from Parsed Intent and an Integration-owned Semantic Model. Integration Backends must consume that IR with enough domain information and type safety to map infrastructure semantics into a Target contract.
 
-A purely generic property bag such as `Dictionary<string, object>` would keep Engine independent from individual infrastructure domains, but would move many structural errors to runtime and make Backend development unnecessarily weakly typed. At the opposite extreme, making Engine compile directly against every Integration's concrete CLR resource model would couple Engine releases to infrastructure-domain releases and defeat independent extension ownership.
+A generic property bag would weaken Backend type safety; making Engine compile directly against every Integration's concrete models would couple Engine releases to domain releases. The architecture therefore needs stable Integration-owned Domain Abstractions while Engine operates only through common contracts.
 
-The architecture needs a boundary that permits domain-owned strongly typed resources while allowing Engine to operate through stable common contracts.
+The Azure pressure tests further established that the graph must support mixed greenfield and brownfield compilations without duplicating domain semantics or requiring existing infrastructure to be fully redescribed.
 
-## Proposed decision
+## Decision
 
-Each Infrastructure Integration SHOULD publish a separately consumable **Domain Abstractions** contract containing the public resource types and domain contracts shared between the Integration and its Backends.
+Each Infrastructure Integration SHOULD publish separately consumable **Domain Abstractions** containing its stable semantic contracts and typed resource models.
 
-For example:
+Engine SHALL NOT take compile-time dependencies on Integration-specific Domain Abstractions. Backends MAY reference their Integration's Domain Abstractions directly.
 
-```text
-SddcFlex.Abstractions
-SddcFlex.Integration
-SddcFlex.Backend.Terraform
-```
+The Resource Graph SHALL preserve Integration-owned typed semantic state rather than flattening it into a generic property bag.
 
-Domain Abstractions SHALL implement or compose the common resource and graph contracts published by Engine Abstractions.
+### Domain type and lifecycle are orthogonal
 
-Engine SHALL construct and operate on the Resource Graph through Engine-level abstractions. Engine SHALL NOT take a compile-time dependency on a specific Integration's Domain Abstractions.
-
-Integration Backends MAY reference their Integration's Domain Abstractions directly so they can consume resolved domain resources with strong typing.
-
-The Resource Graph SHALL preserve the concrete Integration-owned typed resource instances produced by Semantic Analysis. Engine's minimal resource contract defines only the surface Engine itself requires; it does not flatten, discard, or replace domain-specific properties.
+A domain contract expresses **what the infrastructure thing is**. Lifecycle contracts express whether that thing is managed by the current compilation or already exists.
 
 Conceptually:
 
-```text
-                    Engine.Abstractions
-                     ^            ^
-                     |            |
-          SddcFlex.Abstractions   |
-              ^          ^        |
-              |          |        |
-SddcFlex.Integration     SddcFlex.Backend.Terraform
-                                  |
-                                  v
-                       Terraform.Target.Abstractions
+```csharp
+public interface IResourceNode
+{
+    ResourceIdentity Identity { get; }
+    ResourceType Type { get; }
+}
+
+public interface IManagedResource : IResourceNode
+{
+}
+
+public interface IExistingResource : IResourceNode
+{
+}
 ```
 
-The dependency arrows represent compile-time contract dependencies. Engine discovers and interacts with Integration resources through Engine abstractions rather than referencing `SddcFlex.Abstractions` directly.
+Integration Domain Abstractions define semantic contracts such as:
+
+```csharp
+public interface ISubnet : IResourceNode
+{
+}
+
+public interface IVirtualMachine : IResourceNode
+{
+}
+```
+
+A managed and an existing subnet may therefore both satisfy `ISubnet` while differing in lifecycle:
+
+```text
+SubnetResource
+    ISubnet + IManagedResource
+
+ExistingSubnet
+    ISubnet + IExistingResource
+```
+
+These APIs are illustrative; the semantic split is the decision.
+
+The working architectural term **resource participant** refers generally to any managed or existing node that participates in graph semantics. It need not become a separate public CLR type if `IResourceNode` plus lifecycle markers provides the required contract.
+
+## Managed and existing participants
+
+Both managed and existing participants SHALL participate in:
+
+```text
+identity
+references
+relationships
+dependency resolution
+semantic validation
+Backend lowering
+```
+
+A managed resource is infrastructure the current compilation intends to manage. An existing resource is infrastructure asserted to already exist and SHALL NOT be scheduled for creation merely because it participates in the graph.
+
+Existing resources SHOULD carry only the minimum domain information required for identity, semantic validation, and supported Backend lowering. The architecture SHALL NOT require a complete managed-resource description merely to reference brownfield infrastructure.
+
+A mixed graph is therefore normal:
+
+```text
+Existing subnet
+    -> Managed NIC
+    -> Managed VM
+```
+
+No compilation-wide greenfield/brownfield switch is required for graph semantics.
+
+## Typed references target domain contracts
+
+Typed references SHALL target a domain semantic contract rather than a lifecycle-specific implementation.
+
+Conceptually:
+
+```csharp
+ResourceReference<ISubnet>
+```
+
+may resolve to either:
+
+```text
+ISubnet + IManagedResource
+```
+
+or:
+
+```text
+ISubnet + IExistingResource
+```
+
+The lifecycle of the target does not change the semantic meaning of the reference.
+
+This supersedes earlier illustrative forms such as `ResourceReference<SubnetResource>` that accidentally coupled reference type safety to managed-resource implementation classes.
+
+The Integration creates typed references because it understands domain meaning. Engine resolves the identity and validates that the resolved node is compatible with the expected domain contract and canonical `ResourceType` without becoming domain-aware.
+
+The CLR/domain-type mapping may follow a registry pattern in which Integration-owned type metadata associates stable `IntegrationId + ResourceType` identities with domain contracts. The exact API remains open.
 
 ## Ownership
 
 | Component | Responsibility |
 | --- | --- |
-| Adapter | Translate an external Source representation into Parsed Intent. |
-| Domain Abstractions | Define the Integration's public resource types and stable domain contracts shared with Backends. |
-| Integration / Semantic Model | Materialize typed resources, construct canonical identities/references, validate domain-local semantics, and define relationship/prerequisite semantics. |
-| Engine | Orchestrate Semantic Analysis, enforce graph identity uniqueness, resolve references, construct relationships/dependency edges, validate graph integrity, and produce the deterministic Resource Graph. |
-| Integration Backend | Lower resolved domain resources from the Resource Graph into one Target contract. |
-| Target Abstractions | Define the public Target model and compatibility contract. |
-| Target | Validate and emit the Target representation. |
+| Adapter | Translate Source into Parsed Intent. |
+| Domain Abstractions | Define stable domain contracts, managed resource types, existing-resource shapes, and typed values shared with Backends. |
+| Integration / Semantic Model | Materialize semantic nodes, construct canonical identities/references, perform domain-local validation, and define relationship/prerequisite semantics. |
+| Engine | Register identities, resolve references, construct graph edges, validate graph integrity, expose graph views, and produce deterministic ordering. |
+| Backend | Lower resolved domain semantics into one Target contract and validate whether those semantics are representable by that Target generation. |
+| Target | Validate the resulting Target model and emit Target-native artifacts. |
 
 The governing distinction is:
 
-> The Integration defines and applies domain meaning; Engine resolves that meaning into a Resource Graph; the Backend lowers those resolved domain resources into a Target contract.
-
-Engine owns graph structure and resolution mechanics. Integrations own the typed resource payloads and domain semantics represented within that graph. Backends own translation from those typed resources into Target-specific models.
+> Integration supplies domain meaning; Engine supplies graph mechanics; Backend determines Target representability; Target validates and emits the Target representation.
 
 ## Semantic Model and Resource Graph
 
 The Semantic Model and Resource Graph are related but distinct.
-
-A Semantic Model defines and applies resource semantics. The Resource Graph contains resolved resource instances and Engine-owned resolved edges.
-
-The lifecycle is deliberately multi-phase as defined by ADR-010:
 
 ```text
 Parsed Intent
@@ -94,101 +163,67 @@ Engine graph construction + validation
 Resource Graph
 ```
 
-For example, an Integration may materialize a `VirtualMachineResource` containing a typed `ResourceReference<NetworkResource>`. The Integration understands that the property is a network reference and creates the typed reference; Engine resolves its identity against the complete resource set. After resolution, Integration semantics determine whether the reference represents `uses-network` and whether that relationship implies a prerequisite. Engine constructs the resulting graph edges.
+Source declaration order SHALL NOT determine identity, reference resolution, relationship semantics, or dependencies.
 
-This division prevents the Integration from becoming a second graph implementation while keeping domain meaning outside Engine.
+## Resource Graph structure
 
-## Typed Resource Graph
+The Resource Graph SHALL expose a common Engine-owned structural model while retaining concrete Integration-owned domain state.
 
-The Resource Graph SHALL have a common Engine-owned structural contract while containing Integration-owned strongly typed resource instances.
-
-The minimum Engine resource contract SHOULD remain deliberately small. An illustrative shape is:
-
-```csharp
-public interface IResource
-{
-    ResourceIdentity Identity { get; }
-    ResourceType Type { get; }
-}
-```
-
-`ResourceIdentity` is defined semantically by ADR-009 as the tuple of Integration identity, Resource Type, and Integration-owned canonical Resource Key. Engine enforces uniqueness of that tuple without understanding cloud-specific scoping rules.
-
-An Integration's Domain Abstractions may expose a complete strongly typed resource such as:
-
-```csharp
-public sealed record VirtualMachineResource : IResource
-{
-    public required ResourceIdentity Identity { get; init; }
-    public ResourceType Type => SddcFlexResourceTypes.VirtualMachine;
-
-    public required string Name { get; init; }
-    public required int CpuCount { get; init; }
-    public required MemorySize Memory { get; init; }
-    public required ResourceReference<NetworkResource> Network { get; init; }
-    public required StorageProfile StorageProfile { get; init; }
-}
-```
-
-These interfaces and types are illustrative rather than accepted API contracts.
-
-Engine may enumerate and reason about the object through `IResource`, while an SDDC Flex Backend can consume the same graph node as `VirtualMachineResource` because it references `SddcFlex.Abstractions`.
-
-The narrow Engine interface does not imply a narrow or lossy graph. The full concrete resource instance remains available to the Backend with all domain properties produced during Semantic Analysis.
-
-## Lossless Infrastructure IR
-
-The Infrastructure IR SHALL preserve all resolved information required by a conformant Backend to lower the resource into a supported Target.
-
-A Backend SHALL NOT need to return to raw or Parsed Intent merely to recover a property that was available before Semantic Analysis.
-
-If Parsed Intent provides CPU, memory, storage profile, and a network reference, and the Semantic Model accepts those values, the resulting typed resource and graph SHALL preserve the corresponding domain state and resolved graph semantics required for Backend consumption.
-
-## Resource references and graph connectivity
-
-Domain resource objects MAY contain typed resource references, but graph connectivity and resolved edges remain Engine-owned concerns.
-
-The preferred minimum reference shape is defined in ADR-009 and is conceptually:
-
-```csharp
-public readonly record struct ResourceReference<TResource>(
-    ResourceIdentity Identity)
-    where TResource : IResource;
-```
-
-The Integration creates the reference because it understands domain meaning. The reference identifies the expected target resource type and identity, but it does not hold a live target object, define relationship meaning, or automatically imply a dependency.
-
-Engine resolves the reference against the complete registered resource set and validates target existence/type. A Backend may later ask the Resource Graph to resolve the typed reference to the concrete target resource through Engine-owned graph APIs.
-
-## Graph-owned relationships and dependencies
-
-Semantic relationships and dependency edges SHOULD be represented by the Resource Graph rather than being required members of each resource object.
-
-An illustrative graph contract may resemble:
+Conceptually:
 
 ```csharp
 public interface IResourceGraph
 {
-    IReadOnlyCollection<IResource> Resources { get; }
+    IReadOnlyCollection<IResourceNode> Nodes { get; }
     IReadOnlyCollection<ResourceRelationship> Relationships { get; }
     IReadOnlyCollection<ResourceDependency> Dependencies { get; }
 }
 ```
 
-This keeps graph state, cycle detection, dependency ordering, traversal, and reference resolution under Engine ownership while allowing resource classes to focus on domain state.
+The exact API is not frozen.
 
-ADR-009 defines the semantic distinction:
+Engine may reason through `IResourceNode`, while a Backend can consume the resolved node through its Integration's domain contract such as `IVirtualMachine`, `ISubnet`, or `INetworkInterface`.
 
-- a **relationship** expresses domain meaning, such as a virtual machine using a network or disk;
-- a **dependency** expresses prerequisite or ordering behavior, such as a virtual disk needing to exist before a virtual machine can use it.
+## Semantic-lossless Infrastructure IR
 
-A relationship may produce a dependency according to Integration semantics, but the concepts are not interchangeable. A genuine prerequisite may also create a dependency without a semantic relationship. Integrations SHALL NOT invent semantic relationships or synthetic container resources merely to encode ordering.
+The Infrastructure IR SHALL be **semantically lossless** for conformant Backends.
 
-`ResourceDependency` remains a structural graph fact. Domain-facing explanations and rule identities belong to separate provenance supplied by Integration semantics and carried by Engine as needed for diagnostics; they do not affect dependency equality or graph behavior.
+Every accepted semantic fact required by a supported Backend must survive into:
 
-## Domain Abstractions and Backend lowering
+- Domain Abstraction state;
+- resolved identities/references;
+- relationships/dependencies; or
+- defined per-compilation context.
 
-Domain Abstractions are the stable typed semantic input consumed by Backends.
+A Backend SHALL NOT return to raw or Parsed Intent to recover accepted semantic information.
+
+Semantic-lossless does not mean source-representation-lossless. YAML ordering, comments, aliases, formatting, and Adapter-specific syntax need not survive except where required for diagnostics/provenance.
+
+If downstream lowering reveals that an accepted domain property was lost, the architectural correction is to preserve that property in Domain Abstractions or defined compilation context—not to expose raw Intent to the Backend.
+
+## Compilation Context
+
+A Backend MAY receive defined `CompilationContext` in addition to the Resource Graph for information that belongs to the current compilation rather than an individual resource.
+
+Examples may include account/subscription selection, region defaults, naming context, credential/profile selection, workflow metadata, or Target selection.
+
+`CompilationContext` SHALL be scoped to one Intent/compilation and SHALL NOT be treated as global Engine state.
+
+It SHALL NOT contain raw Parsed Intent as an escape hatch around the semantic IR boundary.
+
+## Relationships, dependencies, and lifecycle
+
+Relationships and dependencies remain graph-owned resolved facts as defined by ADR-009.
+
+Lifecycle does not determine whether a dependency exists or its direction; the Integration's domain semantics do.
+
+Existing and managed nodes may both appear in semantic dependency traversal. Provisioning order, however, is a managed-resource projection of the graph: existing prerequisites are treated as already satisfied rather than scheduled for creation.
+
+This preserves one semantic dependency model without inventing special brownfield edge types.
+
+## Backend lowering
+
+A Backend bridges:
 
 ```text
 Domain Abstractions
@@ -200,116 +235,79 @@ Domain Abstractions
 Target Abstractions
 ```
 
-The Backend does not define domain resource semantics; those belong to the Integration and its Domain Abstractions. The Backend does not define Target serialization; that belongs to the Target. Its responsibility is translation between the two published contracts.
+The same resolved domain graph may be consumed by multiple Backends, such as Azure-to-Terraform and Azure-to-Bicep.
 
-## Resource Graph ownership
+Managed and existing implementations of the same domain contract remain semantically compatible while allowing the Backend to choose different Target representations.
 
-The Adapter does not construct the canonical Resource Graph. It owns source translation only:
+Target-specific mechanics such as Terraform data/reference constructs, Bicep `existing` declarations, ARM resource IDs, or equivalent concepts SHALL NOT leak into Domain Abstractions or Engine graph semantics.
 
-```text
-YAML / JSON / API / other Source
-        |
-        v
-      Adapter
-        |
-        v
-   Parsed Intent
-```
+## Backend conformance
 
-Engine constructs the canonical graph through the multi-phase Semantic Analysis lifecycle defined in ADR-010. Source declaration order SHALL NOT determine graph identity, relationship, or dependency semantics.
-
-This permits different Source representations and declaration orders to resolve to equivalent infrastructure meaning and deterministic Resource Graphs.
-
-## Backend consumption
-
-A Backend is Integration-owned and understands the Integration's Domain Abstractions.
-
-For example:
+Backend conformance SHOULD be executable using only:
 
 ```text
-SddcFlex.Backend.Terraform
-    -> Engine.Abstractions
-    -> SddcFlex.Abstractions
-    -> Terraform.Target.Abstractions
+Domain Abstractions
+Resource Graph
+defined Compilation Context
+Target Abstractions
 ```
 
-A second Backend can consume the same resolved SDDC Flex graph types while mapping them into a different Target.
+Adapter and Parsed Intent dependencies should not be available to the conformance fixture. This makes the semantic IR boundary structurally testable.
 
 ## Domain contract versioning
 
-Domain Abstractions SHALL follow the same contract-generation principles defined by ADR-007.
+Domain Abstractions SHALL follow ADR-007 contract-generation principles. Breaking required shape/semantic changes require a new independently addressable generation; non-breaking package revisions may occur within a generation.
 
-A published Domain Abstractions generation is immutable in its required public shape and semantics. Package revisions within a generation MAY fix defects, documentation, tooling, metadata, or other concerns that do not invalidate already-conformant consumers.
-
-Breaking changes require a new independently addressable contract generation. Backends choose which Domain Abstractions generation they consume. The existence of a newer generation does not by itself require a Backend to migrate.
-
-Domain compatibility SHALL be explicit and testable.
-
-## Physical extension model
-
-The principal independently loadable extension types remain:
-
-```text
-Adapters
-Integrations
-Targets
-```
-
-A Semantic Model is an Integration responsibility and need not be a separate plugin assembly. A Backend is Integration-owned and may be packaged with the Integration or separately according to ownership and release needs. An Emitter is a Target responsibility and need not be an independently loaded plugin merely because it is an architectural concept.
+Backend compatibility is demonstrated through conformance rather than inferred from package major versions alone.
 
 ## Guardrails
 
 - Engine SHALL NOT reference Integration-specific resource types at compile time.
-- Domain Abstractions SHALL depend only on stable Engine contracts and domain-neutral dependencies appropriate to the public contract.
-- Backends MAY depend on Domain Abstractions and the Target Abstractions they support.
-- Domain resource types SHALL NOT contain Target-specific representation concerns.
-- Semantic Models define/apply resource semantics; Resource Graphs contain resolved resource instances and edges.
+- Domain Abstractions SHALL NOT contain Target-specific representation concerns.
+- Domain semantic contracts and lifecycle contracts SHALL remain orthogonal.
+- Typed references SHALL target domain contracts rather than managed-resource implementation classes.
+- Managed and existing nodes SHALL use the same identity and relationship model.
+- Existing infrastructure SHALL NOT require a full managed-resource description unless semantic requirements genuinely demand those properties.
 - Integrations create typed references; Engine resolves them.
-- Integrations define relationship and prerequisite semantics; Engine constructs and analyzes resulting graph edges.
-- Integration implementations SHALL NOT own an independent Resource Graph implementation.
-- The Resource Graph SHALL preserve concrete Integration-owned typed resource instances rather than flattening them into generic property bags solely for Engine convenience.
-- The Infrastructure IR SHALL preserve resolved information required by supported Backends; Backends SHALL NOT depend on raw Intent for information recovery.
-- Source syntax and declaration order SHALL NOT leak into canonical graph semantics.
-- Target concepts SHALL NOT leak into Domain Abstractions.
-- Backends SHALL NOT redefine domain semantics owned by the Integration.
-- Backends SHALL NOT own Target serialization or emission behavior owned by the Target.
-- A contract abstraction SHOULD exist only when it protects an independently owned or independently evolving concern.
+- Integrations define relationship/dependency semantics; Engine constructs and analyzes resulting graph facts.
+- Engine SHALL NOT infer dependency direction from managed/existing lifecycle type.
+- Provisioning order SHALL be derived from managed resources while existing prerequisites are treated as already satisfied.
+- The Resource Graph SHALL preserve Integration-owned semantic state rather than flattening it for Engine convenience.
+- Backends SHALL NOT depend on raw or Parsed Intent for information recovery.
+- `CompilationContext` SHALL be per Intent/compilation, defined, and non-global.
+- Backends validate Target representability; Targets validate Target-model correctness.
 
 ## Consequences
 
 ### Positive
 
-- Strong typing is preserved for Integration and Backend developers.
-- Engine remains independent of infrastructure-domain implementations.
-- Multiple Backends can reuse the same resolved domain model.
-- Domain contracts can evolve using explicit compatibility discipline.
-- The Resource Graph can remain semantically rich without becoming a universal lowest-common-denominator cloud model.
-- Typed identity-based resource references avoid embedding a cyclic object graph while preserving domain type safety.
-- Source-order independence and graph ownership are explicit.
+- Strong typing is preserved without making Engine domain-aware.
+- Greenfield and brownfield resources coexist in one semantic graph.
+- Existing resources can remain lightweight.
+- Typed references do not leak lifecycle assumptions.
+- Multiple Backends can reuse one semantically complete domain graph.
+- Per-compilation context avoids singleton/global compilation state.
+- The IR boundary can be enforced through Backend conformance tests.
 
-### Negative / risks
+### Risks
 
-- Each Integration may introduce an additional public contract package and versioning responsibility.
-- Engine plugin loading must preserve CLR type identity between Domain Abstractions consumed by Integrations and Backends.
-- Poorly designed Domain Abstractions could become overly broad or change too frequently.
-- Typed domain resources complicate serialization and persistence of the Resource Graph compared with a generic property bag.
-- Supporting multiple Domain Abstractions generations in one process may require deliberate assembly isolation or compatibility adapters.
-- Resource reference and graph-resolution APIs must be designed carefully so Backends can navigate relationships without coupling resources directly to one another.
+- Domain contracts may require separate existing implementations where identity/type alone is insufficient.
+- The CLR domain-contract to `ResourceType` registry requires deliberate design.
+- Multiple Domain Abstractions generations still create assembly/type-identity concerns.
+- Existing-resource enrichment may eventually be needed for semantic rules or Target lowering; that mechanism remains separate from the initial graph contract.
 
 ## Open questions
 
-- What is the exact common Engine resource contract beyond `Identity` and `Type`, if anything?
-- What is the exact `IResourceGraph` contract and lookup/resolution API?
-- What is the concrete `ResourceRelationship` contract and relationship-type representation?
-- What common typed value system, if any, belongs in Engine Abstractions?
-- What is the minimum public Semantic Model API that supports ADR-010's lifecycle without exposing unnecessary graph internals?
-- How are typed Resource Graphs serialized into diagnostics, provenance, or Artifact Bundles?
-- What constitutes the minimum conformance suite for a Domain Abstractions generation?
-- How are multiple Domain Abstractions generations isolated and resolved by the in-process plugin loader?
-- Should Backends normally be packaged with their Integration or independently when they have different release cadences?
+- What exact common base contract should managed and existing nodes share beyond `Identity` and `Type`?
+- What is the exact `IResourceGraph` lookup/traversal API?
+- How is a domain interface such as `ISubnet` deterministically associated with canonical `ResourceType` metadata?
+- What is the minimum existing-resource shape when identity/type alone is insufficient?
+- How are graph nodes and typed domain state serialized into diagnostics/provenance/Artifact Bundles?
+- What is the minimum Domain Abstractions conformance suite?
+- How are multiple Domain Abstractions generations isolated in the plugin loader?
 
 ## Related decisions
 
 - ADR-007 defines contract evolution and compatibility.
-- ADR-009 defines Resource Identity, typed references, relationships, dependencies, and dependency provenance boundaries.
-- ADR-010 defines the multi-phase Semantic Model and Semantic Analysis lifecycle.
+- ADR-009 defines Resource Identity, typed references, relationships, dependencies, and graph semantics.
+- ADR-010 defines the Semantic Analysis lifecycle and validation ownership.
