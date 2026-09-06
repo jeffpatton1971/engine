@@ -10,9 +10,9 @@ ADR-008 establishes that the Infrastructure IR is a Resource Graph containing co
 
 The graph therefore needs a stable way to identify resources, express typed references between domain resources, distinguish semantic relationships from execution dependencies, and preserve deterministic graph behavior without forcing Engine to understand cloud-specific scoping rules.
 
-BAT vNext already proves several useful graph behaviors through its dependency graph: deterministic topological ordering, missing-dependency detection, cycle detection, and dependency traversal. The new architecture should evolve those proven behaviors while replacing string-name dependencies with resolved identities and explicit graph edges.
+The required graph behaviors include deterministic topological ordering, missing-reference and missing-dependency detection, cycle detection, and dependency traversal. These behaviors should operate on resolved identities and explicit graph edges rather than source-level names or document ordering.
 
-A particular design risk is allowing execution-order requirements to distort the domain model. Earlier designs can accumulate synthetic container resources or artificial relationships whose only purpose is to make ordering work. This ADR explicitly separates semantic meaning from prerequisite ordering to discourage that pattern.
+A particular design risk is allowing execution-order requirements to distort the domain model. Designs can accumulate synthetic container resources or artificial relationships whose only purpose is to make ordering work. This ADR explicitly separates semantic meaning from prerequisite ordering to discourage that pattern.
 
 ## Proposed decision
 
@@ -249,18 +249,9 @@ Integrations own:
 
 Backends consume the resolved graph. They SHALL NOT recreate identity resolution or reinterpret raw Intent merely to discover relationships or dependencies that Semantic Analysis should already have resolved.
 
-## Evolution from BAT vNext dependency graph
+## Structural graph model
 
-BAT vNext currently models dependency identity primarily through resource names and string-returning dependency declarations.
-
-Conceptually:
-
-```text
-IResource.Name
-IResource.GetDependencies() -> string names
-```
-
-The new Resource Graph evolves that approach to explicit identity and resolved edges:
+The Resource Graph replaces source-level dependency naming and implicit document-order assumptions with explicit identity and resolved edges:
 
 ```text
 ResourceIdentity
@@ -278,7 +269,7 @@ ResourceDependency
     DependentIdentity
 ```
 
-The exact edge APIs are not yet accepted, but the architectural direction is to preserve the proven deterministic graph algorithms while strengthening identity and semantic resolution.
+The exact edge APIs are not yet accepted. The architectural requirement is that deterministic graph algorithms operate over these resolved structural facts rather than over infrastructure-domain-specific naming conventions.
 
 ## Guardrails
 
@@ -311,7 +302,7 @@ The exact edge APIs are not yet accepted, but the architectural direction is to 
 - Structural graph equality remains independent from human-readable diagnostic text.
 - Multiple semantic reasons can explain one deduplicated dependency edge.
 - Synthetic container abstractions are discouraged unless they represent real infrastructure concepts.
-- Proven BAT vNext topological-sort and cycle-detection behavior can be carried forward into the richer graph model.
+- Deterministic topological ordering, traversal, and cycle detection operate over explicit resolved identities and edges.
 
 ### Negative / risks
 
