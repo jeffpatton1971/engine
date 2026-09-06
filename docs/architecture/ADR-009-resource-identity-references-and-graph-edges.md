@@ -6,17 +6,15 @@
 
 ## Context
 
-ADR-008 establishes that the Infrastructure IR is a Resource Graph containing concrete Integration-owned typed resources while Engine owns graph structure and resolution semantics.
+ADR-008 establishes a Resource Graph containing Integration-owned typed semantic nodes while Engine owns graph structure and resolution mechanics.
 
-The graph therefore needs a stable way to identify resources, express typed references between domain resources, distinguish semantic relationships from execution dependencies, and preserve deterministic graph behavior without forcing Engine to understand cloud-specific scoping rules.
+The graph needs stable identity, typed references, semantic relationships, prerequisite dependencies, mixed managed/existing lifecycle participation, deterministic traversal, and provisioning ordering without forcing Engine to understand infrastructure-domain scoping rules.
 
-The required graph behaviors include deterministic topological ordering, missing-reference and missing-dependency detection, cycle detection, and dependency traversal. These behaviors should operate on resolved identities and explicit graph edges rather than source-level names or document ordering.
+## Decision
 
-A particular design risk is allowing execution-order requirements to distort the domain model. Designs can accumulate synthetic container resources or artificial relationships whose only purpose is to make ordering work. This ADR explicitly separates semantic meaning from prerequisite ordering to discourage that pattern.
+### Resource identity
 
-## Proposed decision
-
-The minimum graph identity model is based on three values:
+The minimum graph identity semantics are:
 
 ```csharp
 public readonly record struct ResourceIdentity(
@@ -25,160 +23,136 @@ public readonly record struct ResourceIdentity(
     ResourceKey Key);
 ```
 
-The exact API shape remains illustrative, but the semantics are accepted for this exploration.
+The Integration owns construction and canonicalization of `ResourceKey` according to its domain identity/scoping semantics.
 
-### Integration ownership of ResourceKey
+Engine SHALL NOT understand or manufacture cloud-specific scopes such as Azure resource groups/VNets/subscriptions, Kubernetes namespaces, GCP projects/zones, or other platform containers.
 
-The Integration author owns construction of the canonical `ResourceKey` for resources in that infrastructure domain.
+If scope is required for uniqueness, the Integration encodes it into the canonical key.
 
-Engine SHALL NOT understand or manufacture cloud-specific scope such as Azure subscriptions/resource groups, Kubernetes namespaces, GCP projects/zones, or SDDC Flex organizational containers.
-
-If domain-specific scope is required to make a key unique, the Integration incorporates that scope into the canonical `ResourceKey`.
-
-Examples may conceptually resemble:
+For example, two Azure subnets both named `app` may legitimately have identities conceptually equivalent to:
 
 ```text
-azure.virtual-machine.production/web-01
-sddcflex.virtual-machine.customer-a/vapp-01/web-01
-kubernetes.deployment.production/web-api
+azure | azure.subnet | network-east-rg/east-vnet/app
+azure | azure.subnet | network-west-rg/west-vnet/app
 ```
 
-The specific key syntax belongs to the Integration contract rather than Engine.
+The exact syntax belongs to Azure Domain Abstractions, not Engine.
 
-Engine treats the tuple:
+Engine treats:
 
 ```text
 Integration + ResourceType + ResourceKey
 ```
 
-as the authoritative graph identity and SHALL enforce uniqueness within the Resource Graph.
+as authoritative identity and SHALL enforce uniqueness deterministically.
 
-Engine SHALL reject duplicate identities deterministically rather than attempting to repair, rename, or infer a better key.
+Existing and managed versions of the same infrastructure concept SHALL use the same identity namespace. Lifecycle is not part of `ResourceIdentity`.
 
-## Resource references
+### Ambiguous source references
 
-Domain Abstractions MAY use strongly typed identity-based references between resources.
+A source value such as `subnet: app` may be insufficient for an Integration to construct a canonical identity when multiple domain scopes are possible.
 
-The preferred minimum shape is conceptually:
+That ambiguity is an Integration semantic/materialization diagnostic because only the Integration understands the domain's scoping rules.
 
-```csharp
-public readonly record struct ResourceReference<TResource>(
-    ResourceIdentity Identity)
-    where TResource : IResource;
-```
+Once the Integration produces a canonical `ResourceIdentity`, failure to find that identity in the registered graph is an Engine unresolved-reference diagnostic.
 
-A `ResourceReference<TResource>` identifies the expected target resource type and target identity. It SHALL NOT hold a live object pointer to the target resource.
+Therefore:
 
-For example:
+> Integration resolves domain naming/scoping into canonical identity; Engine resolves canonical identity into graph nodes.
 
-```csharp
-public sealed record VirtualMachineResource : IResource
-{
-    public required ResourceIdentity Identity { get; init; }
-    public required ResourceReference<NetworkResource> Network { get; init; }
-}
-```
+## Typed references
 
-This preserves compile-time type safety without turning Integration-owned resource objects into a cyclic CLR object graph.
+Domain Abstractions MAY use strongly typed identity-based references.
 
-Engine resolves the reference against the Resource Graph. Resolution failure, missing resources, duplicate identities, or incompatible target types SHALL produce deterministic diagnostics.
-
-A Backend may use graph APIs to resolve the typed reference into the concrete Integration-owned resource instance.
+A typed reference SHALL target a domain semantic contract rather than a lifecycle-specific implementation.
 
 Conceptually:
 
 ```csharp
-NetworkResource network = graph.Resolve(vm.Network);
+ResourceReference<ISubnet>
 ```
 
-The exact lookup API remains an open design question.
+where `ISubnet` is an Integration-owned domain contract implemented by both managed and existing subnet shapes.
+
+The reference contains canonical identity and SHALL NOT hold a live target object pointer.
+
+It does not by itself define relationship meaning or imply a dependency.
+
+The Integration constructs the reference because it understands the semantic property. Engine resolves it against the complete identity registry and verifies structural/domain-contract consistency through the Integration's published type metadata.
+
+The exact generic constraint and domain-contract-to-`ResourceType` association API remain open; earlier examples constrained `TResource` directly to a managed `IResource` implementation and are superseded by ADR-008's domain-contract/lifecycle split.
 
 ## Relationships versus dependencies
 
-Relationships and dependencies are distinct graph concepts and SHALL NOT be treated as synonyms.
-
-### Relationship
-
-A **relationship** expresses domain meaning between resources.
-
-Examples:
+A **relationship** expresses domain meaning:
 
 ```text
-VirtualMachine --uses-network--> Network
-VirtualMachine --uses-disk-----> VirtualDisk
-VirtualMachine --contained-in--> ResourceGroup
-Service -------exposes---------> Endpoint
+VM --attached-to--> NIC
+NIC --attached-to--> Subnet
+VM --uses-disk--> ManagedDisk
+VM --contained-in--> ResourceGroup
 ```
 
-Relationships answer questions such as:
-
-> What does this resource use, contain, connect to, expose, belong to, or otherwise relate to in the infrastructure domain?
-
-Relationship semantics are defined by the Integration / Semantic Model.
-
-A typed `ResourceReference<TResource>` identifies the referenced resource but does not by itself define the semantic meaning of the relationship. The Semantic Model supplies that meaning.
-
-### Dependency
-
-A **dependency** expresses ordering or prerequisite behavior.
-
-Examples:
+A **dependency** expresses a prerequisite or ordering fact:
 
 ```text
-VirtualDisk    --> VirtualMachine
-Network        --> VirtualMachine
-ResourceGroup  --> VirtualMachine
+Subnet -> NIC
+NIC -> VM
+ManagedDisk -> VM
+ResourceGroup -> VM
 ```
 
-These edges mean the prerequisite resource must be available before the dependent resource can be correctly lowered, emitted, or ultimately provisioned according to the domain semantics being represented.
+Relationships and dependencies SHALL remain distinct.
 
-A dependency may be derived from a semantic relationship, but the two are not equivalent.
+A relationship may imply a dependency. A genuine platform prerequisite may also create a dependency without a useful enduring semantic relationship. Integrations SHALL NOT invent relationships merely to encode ordering.
+
+### Dependency direction belongs to domain semantics
+
+Lifecycle type does not determine whether a dependency exists or its direction.
 
 For example:
 
 ```text
-VirtualMachine --uses-disk--> VirtualDisk
+Existing Subnet -> Managed NIC
 ```
 
-may imply:
+is valid in the Azure pressure test because the NIC requires the subnet.
+
+The reverse edge is not rejected because it is `Managed -> Existing`; it is absent because Azure subnet semantics do not require the NIC.
+
+The governing rule is:
+
+> Integration determines whether a dependency exists and its direction. Engine validates and operates on the resulting graph; lifecycle affects provisioning behavior, not semantic edge validity.
+
+Engine SHALL NOT reverse, invent, or reject dependency direction solely from lifecycle markers.
+
+## Mixed-lifecycle dependency views
+
+Managed and existing nodes both participate in semantic dependency traversal.
+
+Provisioning order is different: existing prerequisites are already satisfied and are not scheduled for creation.
+
+Conceptually:
 
 ```text
-VirtualDisk --> VirtualMachine
+Semantic dependency graph
+    Existing Subnet -> Managed NIC -> Managed VM
+
+Managed provisioning projection
+    Managed NIC -> Managed VM
 ```
 
-because the disk must exist before the VM can use it.
+Engine therefore needs to distinguish semantic dependency traversal from the managed provisioning projection without creating separate competing dependency edge types.
 
-Similarly:
+Managed-to-managed cycles are ordinary provisioning cycles and SHALL fail graph validation.
 
-```text
-VirtualMachine --contained-in--> ResourceGroup
-```
+Existing-only dependency edges SHOULD NOT be generated merely to reconstruct historical provisioning order. If an Integration emits such an edge because it represents a current semantic prerequisite, Engine may retain it for semantic traversal.
 
-may imply:
+A full mixed-lifecycle semantic cycle may be diagnostically relevant, but Engine SHALL NOT infer domain invalidity from lifecycle direction alone. Any domain-specific semantic-cycle prohibition belongs to Integration semantics; managed provisioning cycles remain Engine graph failures.
 
-```text
-ResourceGroup --> VirtualMachine
-```
+## Dependency provenance
 
-because the resource group must exist before the VM can be deployed into it.
-
-However, some semantic relationships may not imply ordering. A peer relationship between two resources, for example, may be meaningful without establishing that one must precede the other.
-
-Dependencies MAY also exist without a corresponding semantic relationship when the infrastructure platform imposes a genuine prerequisite or ordering rule that has no useful enduring domain relationship. Integrations SHALL NOT fabricate a semantic relationship solely to justify an ordering edge.
-
-Therefore:
-
-- Relationships express **meaning**.
-- Dependencies express **ordering/prerequisite constraints**.
-- Semantic Models determine whether and how relationships produce dependency edges.
-- Dependencies may exist independently when the domain has a real prerequisite without a meaningful semantic relationship.
-- Engine owns the resolved graph edges and deterministic dependency analysis once those semantics have been supplied.
-
-## Dependency provenance and diagnostics
-
-`ResourceDependency` SHALL remain a structural graph fact rather than carrying human-readable explanation directly.
-
-Its preferred minimum semantics are:
+`ResourceDependency` remains a structural fact:
 
 ```csharp
 public readonly record struct ResourceDependency(
@@ -186,72 +160,48 @@ public readonly record struct ResourceDependency(
     ResourceIdentity Dependent);
 ```
 
-The Integration / Semantic Model owns **why** the dependency exists because that explanation originates in domain rules rather than graph mechanics.
+Human-readable reason, rule identity, and source context SHALL NOT participate in structural dependency equality, ordering, or cycle behavior.
 
-Engine MAY carry provenance alongside resolved edges for diagnostics and explainability, but provenance is a separate concern from dependency identity.
+Integration semantics own why a dependency exists. Engine MAY retain separate provenance for diagnostics/explainability. Multiple rules may therefore explain one deduplicated structural dependency.
 
-Conceptually:
+## Avoid synthetic semantics
 
-```text
-Semantic rule
-    |
-    +--> ResourceDependency(A, B)
-    |
-    +--> provenance
-          rule identity
-          optional explanatory message
-          source/context as appropriate
-```
+The graph SHALL model real infrastructure meaning rather than synthetic containers or artificial relationships created merely for ordering.
 
-This permits two semantic rules to derive the same graph dependency without creating two distinct dependency edges. Engine can deduplicate the structural edge while retaining multiple provenance records when useful.
-
-Human-readable explanations, rule identifiers, and diagnostic context SHALL NOT affect dependency equality, graph ordering, cycle detection, or other structural behavior.
-
-The exact provenance contract remains open and should be designed with the diagnostics / Artifact Bundle work rather than embedded prematurely into the graph edge contract.
-
-## Avoid synthetic containers and artificial semantics
-
-The Resource Graph SHALL model resources and relationships that are meaningful in the infrastructure domain. It SHOULD NOT introduce synthetic container resources merely to provide grouping, traversal, or deployment ordering when those concerns can be represented directly through graph metadata or dependency edges.
-
-Likewise, an Integration SHALL NOT invent semantic relationships whose only purpose is to make topological ordering work.
-
-A platform-native container is valid when it is a real resource or domain concept. For example, an Azure Resource Group is a meaningful Azure resource and `VirtualMachine --contained-in--> ResourceGroup` is a valid semantic relationship. A made-up `VirtualMachineContainer` that exists only so Engine can order VMs is not.
-
-The design principle is:
+Platform-native containers remain valid when they are real domain concepts.
 
 > Model real infrastructure meaning as resources and relationships; model prerequisite ordering as dependencies. Do not create fake domain structure to compensate for graph mechanics.
-
-This separation is intended to prevent the Resource Graph from accumulating generic container abstractions that obscure the underlying infrastructure model.
 
 ## Graph ownership
 
 Engine owns:
 
-- authoritative graph identity enforcement;
-- reference resolution;
-- resolved semantic relationship edges;
-- resolved dependency edges;
+- authoritative identity uniqueness;
+- canonical-identity lookup;
+- typed-reference resolution mechanics;
+- resolved relationship/dependency storage;
 - deterministic traversal;
-- missing-reference diagnostics;
-- cycle detection;
-- deterministic topological ordering;
-- carrying graph provenance when needed for diagnostics/explainability.
+- graph-integrity diagnostics;
+- managed provisioning cycle detection;
+- deterministic managed-resource ordering;
+- provenance transport where required.
 
 Integrations own:
 
-- domain resource types;
-- canonical `ResourceKey` construction;
-- typed resource reference properties;
-- semantic relationship definitions;
-- rules determining whether a relationship implies dependency behavior;
-- domain-specific prerequisite rules that create dependency-only edges where justified;
-- domain-facing explanations for why relationships and dependencies exist.
+- domain resource contracts;
+- canonical ResourceKey construction;
+- domain scope interpretation;
+- typed reference creation;
+- relationship semantics;
+- dependency existence/direction;
+- domain-specific semantic-cycle rules where applicable;
+- domain-facing provenance/explanations.
 
-Backends consume the resolved graph. They SHALL NOT recreate identity resolution or reinterpret raw Intent merely to discover relationships or dependencies that Semantic Analysis should already have resolved.
+Backends consume resolved graph semantics and SHALL NOT recreate source-level identity/reference resolution.
 
-## Structural graph model
+## Structural model
 
-The Resource Graph replaces source-level dependency naming and implicit document-order assumptions with explicit identity and resolved edges:
+Conceptually:
 
 ```text
 ResourceIdentity
@@ -269,57 +219,53 @@ ResourceDependency
     DependentIdentity
 ```
 
-The exact edge APIs are not yet accepted. The architectural requirement is that deterministic graph algorithms operate over these resolved structural facts rather than over infrastructure-domain-specific naming conventions.
+Exact APIs remain open.
 
 ## Guardrails
 
-- Adapter identity SHALL NOT participate in `ResourceIdentity`; equivalent Intent from different Adapters must resolve to the same domain identity.
-- Target-specific addresses SHALL NOT participate in `ResourceIdentity`.
-- Engine SHALL NOT encode infrastructure-domain scope as dedicated fields solely for one cloud or platform.
-- Integration authors SHALL provide canonical ResourceKeys suitable for uniqueness in their domain.
-- Engine SHALL enforce uniqueness of the complete `ResourceIdentity` tuple.
-- `ResourceReference<TResource>` SHALL remain identity-based rather than object-pointer-based.
-- A resource reference SHALL NOT automatically imply an execution dependency.
-- Relationships and dependencies SHALL remain independently represented graph concepts.
-- Dependencies MAY exist without a semantic relationship when a genuine prerequisite exists.
-- Integrations SHALL NOT invent semantic relationships solely to encode ordering.
-- Synthetic container resources SHOULD NOT be introduced solely for grouping, traversal, or dependency ordering.
-- Platform-native containers remain valid resources when they are genuine domain concepts.
-- `ResourceDependency` SHALL remain structural and SHALL NOT contain diagnostic prose or rule semantics.
-- Integration / Semantic Model logic owns the reason a dependency exists; Engine may carry that provenance separately.
-- Backends SHALL consume resolved graph semantics rather than re-resolving source-level references.
+- Adapter identity SHALL NOT participate in ResourceIdentity.
+- Target-specific addresses SHALL NOT participate in ResourceIdentity.
+- Lifecycle SHALL NOT participate in ResourceIdentity.
+- Integration authors SHALL canonicalize whatever domain scope is required for uniqueness.
+- Engine SHALL enforce uniqueness of the complete ResourceIdentity tuple.
+- Ambiguous domain scope/name resolution belongs to Integration diagnostics.
+- Missing canonical identities belong to Engine reference-resolution diagnostics.
+- Typed references SHALL target domain contracts rather than lifecycle-specific implementation types.
+- Resource references SHALL remain identity-based rather than object-pointer-based.
+- A reference SHALL NOT automatically imply a dependency.
+- Relationships and dependencies SHALL remain independently represented concepts.
+- Integration semantics own dependency existence and direction.
+- Engine SHALL NOT infer dependency validity solely from managed/existing lifecycle.
+- Existing nodes SHALL participate in semantic dependency traversal but SHALL NOT be scheduled as managed provisioning units.
+- Managed provisioning ordering SHALL operate over managed resources while honoring existing prerequisites as satisfied boundaries.
+- Integrations SHALL NOT fabricate semantic relationships or containers merely for ordering.
+- Dependency provenance SHALL remain separate from structural edge identity.
 
 ## Consequences
 
 ### Positive
 
-- Graph identity is stronger than name-only identity without making Engine cloud-aware.
-- Integrations retain ownership of real domain scoping rules.
-- Typed references provide Backend and Integration developers with compile-time safety.
-- Engine can resolve and diagnose references deterministically.
-- Semantic relationships remain expressive without forcing every relationship into an ordering constraint.
-- Dependency-only edges can represent genuine platform prerequisites without polluting domain semantics.
-- Structural graph equality remains independent from human-readable diagnostic text.
-- Multiple semantic reasons can explain one deduplicated dependency edge.
-- Synthetic container abstractions are discouraged unless they represent real infrastructure concepts.
-- Deterministic topological ordering, traversal, and cycle detection operate over explicit resolved identities and edges.
+- Scoped duplicate names remain unambiguous without making Engine cloud-aware.
+- Existing and managed resources share one identity/reference model.
+- Typed references express semantic type rather than lifecycle implementation.
+- Brownfield prerequisites remain visible without being scheduled for creation.
+- Engine retains deterministic graph mechanics while Integrations retain domain ownership.
+- Dependency semantics do not become polluted by lifecycle-specific special cases.
 
-### Negative / risks
+### Risks
 
-- Integration authors must design canonical ResourceKeys carefully.
-- Poor ResourceKey design can create collisions or unstable identity even when Engine behaves correctly.
-- Relationship-to-dependency derivation needs a precise Semantic Model contract.
-- Dependency-only edges require disciplined use so they do not become an escape hatch for poorly modeled semantics.
-- Separate provenance requires an additional diagnostics/explainability contract later.
-- Typed references and multiple Domain Abstractions generations increase assembly/type-identity considerations for the plugin loader.
+- Integration authors must design stable canonical keys carefully.
+- The domain-contract-to-ResourceType association requires a precise published contract.
+- Semantic dependency traversal and managed provisioning views require clear graph APIs.
+- Existing-only semantic dependencies require discipline so historical provisioning data does not pollute current graph meaning.
+- Provenance remains a separate future diagnostics contract.
 
 ## Open questions
 
-- What is the exact `IResourceGraph` lookup and traversal API?
-- What is the concrete shape of `ResourceRelationship`?
-- How does the Semantic Model declare relationship kinds and dependency behavior?
-- What criteria distinguish a justified dependency-only edge from a missing semantic relationship?
-- Should graph identity comparison be strictly ordinal and case-sensitive by Engine contract, or can an Integration define canonicalization before identity creation?
-- What diagnostics are required for duplicate identities, unresolved references, wrong-type references, and dependency cycles?
-- What is the separate graph provenance contract for diagnostics and explainability?
-- How are graph identities, edges, and provenance serialized into diagnostics and Artifact Bundles?
+- What is the exact Resource Graph lookup/traversal API?
+- How is a domain contract such as `ISubnet` associated with canonical ResourceType metadata?
+- Should Engine expose separate APIs for semantic dependency traversal and managed provisioning order, or views over one graph?
+- What is the concrete ResourceRelationship type representation?
+- Should ResourceKey equality be strictly ordinal after Integration canonicalization?
+- What diagnostics are required for duplicates, unresolved references, inconsistent typed references, and managed provisioning cycles?
+- What is the separate provenance contract for diagnostics and Artifact Bundles?
