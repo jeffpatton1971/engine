@@ -197,6 +197,45 @@ Target validation
 
 A component SHALL NOT take ownership of validation merely because it happens to have enough information to perform it when that validation belongs to another architectural boundary.
 
+## Validation aggregation and fail-fast behavior
+
+Validation SHOULD report the maximum useful set of independent failures that can be discovered safely in a single compilation pass.
+
+A validation phase SHALL NOT stop after the first ordinary validation failure when additional independent checks can still be evaluated without relying on invalid state.
+
+For example, if an Azure VM is missing `size`, has an invalid local naming value, and violates an unrelated disk-size rule, Azure Integration SHOULD return all applicable resource-local diagnostics from that validation pass rather than forcing the engineer through repeated compile/fix/compile cycles.
+
+Conceptually:
+
+```text
+Integration validation
+    check required fields
+    check value constraints
+    check cross-field rules
+    collect diagnostics
+        |
+        v
+return resource result + diagnostic set
+```
+
+The same principle applies to Engine graph validation where safe. Engine SHOULD collect multiple unresolved references, duplicate identities, or other independent graph failures rather than reporting only the first one encountered.
+
+This does not mean every phase must continue after every error. A phase MAY stop processing a particular resource, subgraph, or downstream phase when continuing would create misleading diagnostics, require invalid state, or risk nondeterministic behavior.
+
+Examples of legitimate early termination include:
+
+- source or Parsed Intent is structurally unreadable;
+- a resource cannot be materialized sufficiently to identify its type or identity;
+- duplicate identity makes a specific reference inherently ambiguous;
+- graph construction cannot proceed meaningfully because required structural invariants are absent;
+- a fatal internal contract violation indicates an Integration or Engine defect rather than user-correctable Intent.
+
+The governing rule is:
+
+> Fail fast on unrecoverable structural conditions; aggregate independent user-correctable validation failures whenever safe.
+
+Validation APIs SHOULD therefore prefer structured result/diagnostic collections over using exceptions as ordinary validation-flow control. Exceptions remain appropriate for unexpected runtime failures and broken implementation contracts.
+
 ## Reference creation versus reference resolution
 
 The Integration and Engine have intentionally different responsibilities for resource references.
@@ -275,6 +314,8 @@ Adding a new resource type to an Integration SHOULD NOT require an Engine Core c
 - Integrations define relationship and dependency semantics; Engine constructs and analyzes the resulting graph edges.
 - Source declaration order SHALL NOT imply dependency order.
 - Equivalent Intent expressed through different Adapters SHOULD produce equivalent semantic resources and graph structure.
+- Independent user-correctable validation failures SHOULD be aggregated within a phase when continuing is safe.
+- Exceptions SHOULD NOT be the ordinary mechanism for reporting expected validation failures.
 - Engine SHALL define required semantic behavior before freezing a detailed Semantic Model API.
 - Engine SHALL NOT introduce a universal infrastructure taxonomy merely to simplify Semantic Model implementation.
 
@@ -287,6 +328,7 @@ Adding a new resource type to an Integration SHOULD NOT require an Engine Core c
 - Strongly typed Domain Abstractions can evolve without requiring Engine to understand each concrete resource type.
 - One Engine-owned graph implementation remains authoritative for resolution, cycles, ordering, and traversal.
 - Validation ownership is explicit and testable.
+- Engineers can receive multiple independent validation failures in one run rather than repeatedly fixing one error at a time.
 - Forward references and arbitrary source declaration order are naturally supported.
 - Semantic Models can evolve with their upstream platforms without turning Engine into a universal cloud schema registry.
 - The architecture remains suitable for third-party Integrations built without references to Engine implementation assemblies.
@@ -295,6 +337,7 @@ Adding a new resource type to an Integration SHOULD NOT require an Engine Core c
 
 - The semantic lifecycle requires multiple phases and therefore more orchestration than a single `Analyze()` method.
 - Integration authors must distinguish local semantic validation from graph-level validation.
+- Aggregated validation requires careful suppression of cascading or misleading diagnostics when prerequisite state is invalid.
 - Engine must expose enough resolved-resource context for semantic rules without leaking graph ownership back into the Integration.
 - The eventual Semantic Model API needs careful design to preserve compile-time ergonomics without over-generalizing the contract.
 - Diagnostics may span multiple ownership layers and will require a coherent common diagnostic/provenance model.
@@ -305,9 +348,10 @@ Adding a new resource type to an Integration SHOULD NOT require an Engine Core c
 - How does Engine present resolved resource/reference context to Integration semantic rules during Phase 4?
 - Are semantic rules resource-scoped, model-scoped, or both?
 - How are relationship kinds represented while remaining Integration-owned and Engine-neutral?
-- How are domain-local validation diagnostics represented in the common diagnostic contract?
+- What is the common structured diagnostic contract used to aggregate Integration, Engine, Backend, and Target validation failures?
 - How does semantic-rule provenance integrate with graph diagnostics and the Artifact Bundle?
 - How should semantic analysis behave when some resources fail materialization or local validation?
+- What rules suppress cascading diagnostics when prerequisite validation has already failed?
 - What portions of the Semantic Model contract need independent versioning or conformance testing?
 
 ## Next validation step
